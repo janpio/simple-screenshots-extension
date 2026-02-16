@@ -32,7 +32,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
+const RESTRICTED_URL_PREFIXES = [
+  "chrome://",
+  "chrome-extension://",
+  "edge://",
+  "about:",
+  "chrome-search://",
+  "https://chrome.google.com/webstore",
+  "https://chromewebstore.google.com",
+];
+
+function isRestrictedUrl(url) {
+  return RESTRICTED_URL_PREFIXES.some((prefix) => url.startsWith(prefix));
+}
+
 async function captureScreenshot(tab, fullPage) {
+  if (!tab.url || isRestrictedUrl(tab.url)) {
+    showBadge("✗", "#ef4444");
+    console.warn("Cannot capture screenshot on restricted page:", tab.url);
+    return;
+  }
+
   const tabId = tab.id;
   const debuggee = { tabId };
 
