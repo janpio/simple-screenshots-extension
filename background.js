@@ -1,3 +1,6 @@
+// Load shared utilities (isRestrictedUrl, etc.)
+importScripts("lib.js");
+
 // Create context menu items on install
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -31,20 +34,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
   }
 });
-
-const RESTRICTED_URL_PREFIXES = [
-  "chrome://",
-  "chrome-extension://",
-  "edge://",
-  "about:",
-  "chrome-search://",
-  "https://chrome.google.com/webstore",
-  "https://chromewebstore.google.com",
-];
-
-function isRestrictedUrl(url) {
-  return RESTRICTED_URL_PREFIXES.some((prefix) => url.startsWith(prefix));
-}
 
 async function captureScreenshot(tab, fullPage) {
   if (!tab.url || isRestrictedUrl(tab.url)) {
@@ -91,80 +80,25 @@ async function captureFullPage(tab) {
     );
     const viewportWidth = Math.ceil(metrics.cssLayoutViewport.clientWidth);
 
+    // Inject lib.js into the page so measurePageDimensions is available
+    await chrome.debugger.sendCommand(
+      debuggee,
+      "Runtime.evaluate",
+      {
+        expression: await fetch(chrome.runtime.getURL("lib.js")).then((r) =>
+          r.text()
+        ),
+        returnByValue: true
+      }
+    );
+
     // Measure the true scrollable content height.
-    // Some pages (SPAs, etc.) use overflow:hidden on the body and scroll
-    // inside a nested container. We detect that and expand it for capture.
+    // This also detects and expands nested scroll containers (SPAs, etc.).
     const { result: dims } = await chrome.debugger.sendCommand(
       debuggee,
       "Runtime.evaluate",
       {
-        expression: `(() => {
-          // Standard document-level dimensions
-          let w = Math.max(
-            document.documentElement.scrollWidth,
-            document.body ? document.body.scrollWidth : 0
-          );
-          let h = Math.max(
-            document.documentElement.scrollHeight,
-            document.body ? document.body.scrollHeight : 0
-          );
-
-          // Look for a nested scroll container that is taller than the viewport
-          let scrollContainer = null;
-          const els = document.querySelectorAll('*');
-          for (const el of els) {
-            if (el.scrollHeight > el.clientHeight + 10) {
-              const s = getComputedStyle(el);
-              if (s.overflowY === 'auto' || s.overflowY === 'scroll' || s.overflowY === 'overlay') {
-                if (el.scrollHeight > h) {
-                  h = el.scrollHeight;
-                  w = Math.max(w, el.scrollWidth);
-                  scrollContainer = el;
-                }
-              }
-            }
-          }
-
-          // If we found a nested scroll container, expand it so the browser
-          // renders all content for the screenshot.
-          if (scrollContainer) {
-            scrollContainer.dataset.__screenshotOldOverflow = scrollContainer.style.overflow;
-            scrollContainer.dataset.__screenshotOldHeight = scrollContainer.style.height;
-            scrollContainer.dataset.__screenshotOldMaxHeight = scrollContainer.style.maxHeight;
-            scrollContainer.style.overflow = 'visible';
-            scrollContainer.style.height = 'auto';
-            scrollContainer.style.maxHeight = 'none';
-            scrollContainer.classList.add('__screenshot-expanded__');
-
-            // Also expand ancestors that might clip the container
-            let parent = scrollContainer.parentElement;
-            while (parent && parent !== document.documentElement) {
-              const ps = getComputedStyle(parent);
-              if (ps.overflow === 'hidden' || ps.overflowY === 'hidden') {
-                parent.dataset.__screenshotOldOverflow = parent.style.overflow;
-                parent.dataset.__screenshotOldHeight = parent.style.height;
-                parent.dataset.__screenshotOldMaxHeight = parent.style.maxHeight;
-                parent.style.overflow = 'visible';
-                parent.style.height = 'auto';
-                parent.style.maxHeight = 'none';
-                parent.classList.add('__screenshot-expanded__');
-              }
-              parent = parent.parentElement;
-            }
-
-            // Re-measure after expanding
-            h = Math.max(
-              document.documentElement.scrollHeight,
-              document.body ? document.body.scrollHeight : 0
-            );
-            w = Math.max(
-              document.documentElement.scrollWidth,
-              document.body ? document.body.scrollWidth : 0
-            );
-          }
-
-          return JSON.stringify({ width: w, height: h });
-        })()`,
+        expression: `JSON.stringify(measurePageDimensions())`,
         returnByValue: true
       }
     );
@@ -216,18 +150,7 @@ async function captureFullPage(tab) {
       debuggee,
       "Runtime.evaluate",
       {
-        expression: `(() => {
-          document.getElementById('__screenshot-hide-scrollbars__')?.remove();
-          document.querySelectorAll('.__screenshot-expanded__').forEach(el => {
-            el.style.overflow = el.dataset.__screenshotOldOverflow || '';
-            el.style.height = el.dataset.__screenshotOldHeight || '';
-            el.style.maxHeight = el.dataset.__screenshotOldMaxHeight || '';
-            delete el.dataset.__screenshotOldOverflow;
-            delete el.dataset.__screenshotOldHeight;
-            delete el.dataset.__screenshotOldMaxHeight;
-            el.classList.remove('__screenshot-expanded__');
-          });
-        })()`,
+        expression: `restoreExpandedContainers()`,
         returnByValue: true
       }
     );
@@ -276,17 +199,49 @@ function showFlash(tabId) {
       overlay.style.cssText = `
         position: fixed;
         inset: 0;
-        background: white;
-        opacity: 0.7;
         z-index: 2147483647;
         pointer-events: none;
-        transition: opacity 0.3s ease-out;
       `;
       document.documentElement.appendChild(overlay);
-      requestAnimationFrame(() => {
-        overlay.style.opacity = "0";
-        overlay.addEventListener("transitionend", () => overlay.remove());
-      });
+
+      // Three-phase shutter: white → black → fade out
+      // Visible on any background color.
+      const phases = [
+        { bg: "white", opacity: "1", duration: 0.1 },
+        { bg: "black", opacity: "0.3", duration: 0.1 },
+        { bg: "black", opacity: "0", duration: 0.3 },
+      ];
+
+      let i = 0;
+      function nextPhase() {
+        if (i >= phases.length) {
+          overlay.remove();
+          return;
+        }
+        const p = phases[i++];
+        overlay.style.transition = "none";
+        overlay.style.background = p.bg;
+        overlay.style.opacity = p.opacity;
+
+        requestAnimationFrame(() => {
+          const next = phases[i];
+          if (next) {
+            overlay.style.transition = `opacity ${next.duration}s ease-out, background ${next.duration}s ease-out`;
+            requestAnimationFrame(() => {
+              overlay.style.background = next.bg;
+              overlay.style.opacity = next.opacity;
+              overlay.addEventListener("transitionend", () => {
+                i++;
+                nextPhase();
+              }, { once: true });
+            });
+          } else {
+            overlay.remove();
+          }
+        });
+      }
+
+      nextPhase();
     }
   }).catch(() => {}); // ignore errors on restricted pages
 }

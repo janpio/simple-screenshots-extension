@@ -1,16 +1,4 @@
-const RESTRICTED_URL_PREFIXES = [
-  "chrome://",
-  "chrome-extension://",
-  "edge://",
-  "about:",
-  "chrome-search://",
-  "https://chrome.google.com/webstore",
-  "https://chromewebstore.google.com",
-];
-
-function isRestrictedUrl(url) {
-  return !url || RESTRICTED_URL_PREFIXES.some((prefix) => url.startsWith(prefix));
-}
+// isRestrictedUrl is provided by lib.js (loaded before this script)
 
 chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
   if (isRestrictedUrl(tab?.url)) {
