@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Simple Screenshots",
+  "version": "1.0",
+  "description": "Capture visible or full-page screenshots and copy to clipboard",
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "debugger",
+    "clipboardWrite"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
