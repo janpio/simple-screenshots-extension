@@ -104,13 +104,6 @@ async function captureFullPage(tab) {
     );
     const { width, height } = JSON.parse(dims.value);
 
-    // Hide the viewport dimensions overlay that appears during resize
-    await chrome.debugger.sendCommand(
-      debuggee,
-      "Overlay.setShowViewportSizeOnResize",
-      { show: false }
-    );
-
     // Hide scrollbars so they don't leave a grey strip in the capture
     await chrome.debugger.sendCommand(
       debuggee,
@@ -126,23 +119,44 @@ async function captureFullPage(tab) {
       }
     );
 
-    // Resize viewport to the full content height so the browser renders
-    // everything in one pass.
+    // Suppress the "viewport size" overlay Chrome shows during emulation.
+    // This is cosmetic-only, so ignore errors (the Overlay domain may not
+    // be available in every Chrome build).
+    try {
+      await chrome.debugger.sendCommand(
+        debuggee,
+        "Overlay.setShowViewportSizeOnResize",
+        { show: false }
+      );
+    } catch (_) {}
+
+    // Resize the viewport to the full page height so Chrome performs a
+    // proper layout pass for all below-the-fold content. Without this,
+    // captureBeyondViewport can intermittently duplicate or misrender
+    // content that was never actually laid out.
     await chrome.debugger.sendCommand(
       debuggee,
       "Emulation.setDeviceMetricsOverride",
       {
-        mobile: false,
         width: viewportWidth,
         height,
-        deviceScaleFactor: 1
+        deviceScaleFactor: 0,  // 0 = keep the browser's actual DPR
+        mobile: false
       }
     );
 
+    // Capture the full page — the viewport now matches content height,
+    // so a standard screenshot gets everything.
     const result = await chrome.debugger.sendCommand(
       debuggee,
       "Page.captureScreenshot",
-      { format: "png", captureBeyondViewport: true }
+      { format: "png" }
+    );
+
+    // Clear the emulation override (restores original viewport)
+    await chrome.debugger.sendCommand(
+      debuggee,
+      "Emulation.clearDeviceMetricsOverride"
     );
 
     // Clean up: remove scrollbar-hiding style and restore expanded containers
