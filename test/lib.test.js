@@ -333,6 +333,7 @@ describe("measurePageDimensions — fixed-position modal", () => {
     const win = createWindow(`<!DOCTYPE html>
       <html>
       <body style="overflow: hidden; margin: 0;">
+        <div id="page-header" style="position: sticky; top: 0;">Brand Hub</div>
         <div id="page-content">background page</div>
         <div id="fixed-sidebar" style="position: fixed; top: 0; bottom: 0; left: 0; width: 232px;">sidebar</div>
         <div id="dialog" style="position: fixed; overflow: hidden; height: 100%;">
@@ -482,51 +483,120 @@ describe("measurePageDimensions — fixed-position modal", () => {
     );
   });
 
-  it("restoreExpandedContainers restores position:fixed on overlay", () => {
+  it("restoreExpandedContainers restores position:fixed on all repositioned elements", () => {
     const { win, doc, dialog } = setupModalPage();
+    const sidebar = doc.getElementById("fixed-sidebar");
 
     win.measurePageDimensions();
     assert.equal(dialog.style.position, "absolute");
+    assert.equal(sidebar.style.position, "absolute");
 
     win.restoreExpandedContainers();
     assert.equal(
       dialog.style.position,
       "fixed",
-      "Position should be restored to original fixed"
+      "Dialog position should be restored to fixed"
+    );
+    assert.equal(
+      sidebar.style.position,
+      "fixed",
+      "Sidebar position should be restored to fixed"
     );
     assert.ok(!dialog.classList.contains("__screenshot-repositioned__"));
+    assert.ok(!sidebar.classList.contains("__screenshot-repositioned__"));
   });
 
-  it("leaves other fixed elements untouched", () => {
+  it("converts ALL fixed elements to absolute (including unrelated ones like sidebar)", () => {
     const { win, doc } = setupModalPage();
     const sidebar = doc.getElementById("fixed-sidebar");
 
     win.measurePageDimensions();
 
-    // The sidebar is a separate position:fixed element (not the overlay).
-    // It should be completely untouched — no class, no style changes.
+    // ALL position:fixed elements are converted to position:absolute to
+    // prevent them from spanning the full viewport when the viewport is
+    // stretched for the screenshot. This includes unrelated fixed elements
+    // like the sidebar.
     assert.equal(
       sidebar.style.position,
-      "fixed",
-      "Sidebar should remain position:fixed"
+      "absolute",
+      "Sidebar should be converted to position:absolute"
     );
     assert.ok(
-      !sidebar.classList.contains("__screenshot-repositioned__"),
-      "Sidebar should not be marked as repositioned"
-    );
-    assert.ok(
-      !sidebar.classList.contains("__screenshot-expanded__"),
-      "Sidebar should not be marked as expanded"
+      sidebar.classList.contains("__screenshot-repositioned__"),
+      "Sidebar should be marked as repositioned"
     );
   });
 
-  it("neutralises position:sticky elements inside the scroll container", () => {
-    const { win, doc } = setupModalPage();
-    const stickyHeader = doc.getElementById("sticky-header");
-    const stickySave = doc.getElementById("sticky-save");
+  it("converts ALL fixed ancestors in the chain, not just the nearest one", () => {
+    // Mimics real-world DOM: backdrop (fixed inset-0) > drawer (fixed z-drawer)
+    // > scroll container. Both fixed ancestors must be converted to absolute.
+    const win = createWindow(`<!DOCTYPE html>
+      <html>
+      <body style="overflow: hidden; margin: 0;">
+        <div id="fixed-sidebar" style="position: fixed; top: 0; bottom: 0; left: 0; width: 232px;">sidebar</div>
+        <div id="backdrop" style="position: fixed; top: 0; bottom: 0; left: 0; right: 0;">
+          <div id="drawer" style="position: fixed; overflow: hidden; height: 100%;">
+            <div id="modal-scroll" style="overflow-y: auto; height: 90%;">
+              <div style="height: 11000px;">content</div>
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>`);
+
+    const doc = win.document;
+    const backdrop = doc.getElementById("backdrop");
+    const drawer = doc.getElementById("drawer");
+    const sidebar = doc.getElementById("fixed-sidebar");
+    const modalScroll = doc.getElementById("modal-scroll");
+
+    Object.defineProperty(modalScroll, "scrollHeight", { value: 11000, configurable: true });
+    Object.defineProperty(modalScroll, "clientHeight", { value: 900, configurable: true });
+    Object.defineProperty(modalScroll, "scrollWidth", { value: 800, configurable: true });
+    Object.defineProperty(doc.documentElement, "scrollHeight", { value: 980, configurable: true });
+    Object.defineProperty(doc.documentElement, "scrollWidth", { value: 1200, configurable: true });
+    Object.defineProperty(doc.body, "scrollHeight", { value: 980, configurable: true });
+    Object.defineProperty(doc.body, "scrollWidth", { value: 1200, configurable: true });
+    modalScroll.getBoundingClientRect = () => ({
+      top: 50, left: 400, width: 800, height: 11000, bottom: 11050, right: 1200,
+    });
+    Object.defineProperty(win, "scrollY", { value: 0, configurable: true });
 
     win.measurePageDimensions();
 
+    // Both fixed ancestors should be converted
+    assert.equal(backdrop.style.position, "absolute",
+      "Outer backdrop should be converted to absolute");
+    assert.ok(backdrop.classList.contains("__screenshot-repositioned__"));
+    assert.equal(drawer.style.position, "absolute",
+      "Inner drawer should be converted to absolute");
+    assert.ok(drawer.classList.contains("__screenshot-repositioned__"));
+
+    // Sidebar (not an ancestor) should ALSO be converted — all fixed elements
+    // are converted to prevent viewport-spanning duplication.
+    assert.equal(sidebar.style.position, "absolute",
+      "Sidebar should also be converted to absolute");
+    assert.ok(sidebar.classList.contains("__screenshot-repositioned__"));
+
+    // Restore should bring all back
+    win.restoreExpandedContainers();
+    assert.equal(backdrop.style.position, "fixed");
+    assert.equal(drawer.style.position, "fixed");
+    assert.equal(sidebar.style.position, "fixed");
+    assert.ok(!backdrop.classList.contains("__screenshot-repositioned__"));
+    assert.ok(!drawer.classList.contains("__screenshot-repositioned__"));
+    assert.ok(!sidebar.classList.contains("__screenshot-repositioned__"));
+  });
+
+  it("neutralises all position:sticky elements including outside the overlay", () => {
+    const { win, doc } = setupModalPage();
+    const stickyHeader = doc.getElementById("sticky-header");
+    const stickySave = doc.getElementById("sticky-save");
+    const pageHeader = doc.getElementById("page-header");
+
+    win.measurePageDimensions();
+
+    // Inside the overlay
     assert.equal(
       stickyHeader.style.position,
       "relative",
@@ -540,16 +610,26 @@ describe("measurePageDimensions — fixed-position modal", () => {
       "Sticky save button should be switched to relative"
     );
     assert.ok(stickySave.classList.contains("__screenshot-repositioned__"));
+
+    // Outside the overlay (main page)
+    assert.equal(
+      pageHeader.style.position,
+      "relative",
+      "Page-level sticky header should also be switched to relative"
+    );
+    assert.ok(pageHeader.classList.contains("__screenshot-repositioned__"));
   });
 
-  it("restoreExpandedContainers restores sticky elements", () => {
+  it("restoreExpandedContainers restores all sticky elements", () => {
     const { win, doc } = setupModalPage();
     const stickyHeader = doc.getElementById("sticky-header");
     const stickySave = doc.getElementById("sticky-save");
+    const pageHeader = doc.getElementById("page-header");
 
     win.measurePageDimensions();
     assert.equal(stickyHeader.style.position, "relative");
     assert.equal(stickySave.style.position, "relative");
+    assert.equal(pageHeader.style.position, "relative");
 
     win.restoreExpandedContainers();
     assert.equal(
@@ -562,8 +642,14 @@ describe("measurePageDimensions — fixed-position modal", () => {
       "sticky",
       "Sticky save button position should be restored"
     );
+    assert.equal(
+      pageHeader.style.position,
+      "sticky",
+      "Page-level sticky header should be restored"
+    );
     assert.ok(!stickyHeader.classList.contains("__screenshot-repositioned__"));
     assert.ok(!stickySave.classList.contains("__screenshot-repositioned__"));
+    assert.ok(!pageHeader.classList.contains("__screenshot-repositioned__"));
   });
 });
 

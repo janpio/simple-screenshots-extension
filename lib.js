@@ -69,9 +69,11 @@ function measurePageDimensions() {
       scrollContainer.style.height;
     scrollContainer.dataset.__screenshotOldMaxHeight =
       scrollContainer.style.maxHeight;
-    scrollContainer.style.overflow = "visible";
-    scrollContainer.style.height = "auto";
-    scrollContainer.style.maxHeight = "none";
+    // Use !important to override framework/Tailwind rules that may
+    // also use !important on overflow, height, etc.
+    scrollContainer.style.setProperty("overflow", "visible", "important");
+    scrollContainer.style.setProperty("height", "auto", "important");
+    scrollContainer.style.setProperty("max-height", "none", "important");
     scrollContainer.classList.add("__screenshot-expanded__");
 
     // Also expand ancestors that might clip the container
@@ -83,51 +85,38 @@ function measurePageDimensions() {
         parent.dataset.__screenshotOldHeight = parent.style.height;
         parent.dataset.__screenshotOldMaxHeight = parent.style.maxHeight;
         parent.dataset.__screenshotOldBottom = parent.style.bottom;
-        parent.style.overflow = "visible";
-        parent.style.height = "auto";
-        parent.style.maxHeight = "none";
+        parent.style.setProperty("overflow", "visible", "important");
+        parent.style.setProperty("height", "auto", "important");
+        parent.style.setProperty("max-height", "none", "important");
         // Fixed/absolute elements with both top+bottom set have their height
         // implicitly constrained. Clear bottom so they can grow freely.
         if (ps.position === "fixed" || ps.position === "absolute") {
-          parent.style.bottom = "auto";
+          parent.style.setProperty("bottom", "auto", "important");
         }
         parent.classList.add("__screenshot-expanded__");
       }
       parent = parent.parentElement;
     }
 
-    // If the scroll container lives inside a fixed/absolute overlay (modal,
-    // drawer, etc.), convert it to position:absolute so it renders once in
-    // the document flow instead of repeating at every viewport-height
-    // interval during full-page capture.
-    let overlayAncestor = scrollContainer.parentElement;
-    while (overlayAncestor && overlayAncestor !== document.body) {
-      const os = getComputedStyle(overlayAncestor);
-      if (os.position === "fixed" || os.position === "absolute") {
-        break;
-      }
-      overlayAncestor = overlayAncestor.parentElement;
-    }
-    if (overlayAncestor && overlayAncestor !== document.body) {
-      const oas = getComputedStyle(overlayAncestor);
-      if (oas.position === "fixed") {
-        overlayAncestor.dataset.__screenshotOldPosition =
-          overlayAncestor.style.position;
-        overlayAncestor.style.position = "absolute";
-        overlayAncestor.classList.add("__screenshot-repositioned__");
-      }
-    }
-
-    // Neutralise position:sticky elements. Once the container is expanded
-    // (overflow:visible, height:auto) sticky elements lose their scroll
-    // context and can repeat or stick at wrong positions during full-page
-    // capture. Scan the overlay ancestor (which may contain sticky headers
-    // outside the scroll container) or fall back to the scroll container.
-    const stickyRoot = overlayAncestor !== document.body
-      ? overlayAncestor
-      : scrollContainer;
-    stickyRoot.querySelectorAll("*").forEach((el) => {
-      if (getComputedStyle(el).position === "sticky") {
+    // Convert ALL position:fixed and position:sticky elements on the page
+    // to position:absolute / position:relative respectively.
+    //
+    // Fixed elements are pinned to the viewport. When setDeviceMetricsOverride
+    // stretches the viewport to the full content height, fixed elements with
+    // inset:0 span the entire viewport and render incorrectly. Converting
+    // them to absolute makes them participate in normal document flow so they
+    // render once at their natural position — matching the behavior of a
+    // normal full-page screenshot on a long page.
+    //
+    // Sticky elements are converted to relative because they can re-stick
+    // at wrong positions when the viewport is stretched.
+    document.querySelectorAll("*").forEach((el) => {
+      const pos = getComputedStyle(el).position;
+      if (pos === "fixed") {
+        el.dataset.__screenshotOldPosition = el.style.position;
+        el.style.position = "absolute";
+        el.classList.add("__screenshot-repositioned__");
+      } else if (pos === "sticky") {
         el.dataset.__screenshotOldPosition = el.style.position;
         el.style.position = "relative";
         el.classList.add("__screenshot-repositioned__");
@@ -147,6 +136,34 @@ function measurePageDimensions() {
       document.documentElement.scrollWidth,
       document.body ? document.body.scrollWidth : 0
     );
+
+    // Force body/html to span the full measured height so the document
+    // is tall enough for the capture. Without this, the body may stay
+    // at viewport height (e.g. 493px) due to overflow:hidden and the
+    // absolutely-positioned overlay doesn't extend it.
+    if (document.body) {
+      if (!document.body.classList.contains("__screenshot-expanded__")) {
+        document.body.dataset.__screenshotOldOverflow =
+          document.body.style.overflow;
+        document.body.dataset.__screenshotOldHeight =
+          document.body.style.height;
+        document.body.dataset.__screenshotOldMaxHeight =
+          document.body.style.maxHeight;
+        document.body.classList.add("__screenshot-expanded__");
+      }
+      document.body.dataset.__screenshotOldMinHeight =
+        document.body.style.minHeight || "";
+      document.body.style.setProperty("min-height", h + "px", "important");
+    }
+    if (document.documentElement) {
+      document.documentElement.dataset.__screenshotOldMinHeight =
+        document.documentElement.style.minHeight || "";
+      document.documentElement.style.setProperty(
+        "min-height",
+        h + "px",
+        "important"
+      );
+    }
   }
 
   return { width: w, height: h };
@@ -158,18 +175,43 @@ function measurePageDimensions() {
  */
 function restoreExpandedContainers() {
   document.getElementById("__screenshot-hide-scrollbars__")?.remove();
-  // Restore position:fixed on overlays that were switched to absolute
+
+  // Restore min-height on html and body
+  for (const root of [document.documentElement, document.body]) {
+    if (root && root.dataset.__screenshotOldMinHeight !== undefined) {
+      root.style.removeProperty("min-height");
+      if (root.dataset.__screenshotOldMinHeight) {
+        root.style.minHeight = root.dataset.__screenshotOldMinHeight;
+      }
+      delete root.dataset.__screenshotOldMinHeight;
+    }
+  }
+
+  // Restore position on overlays/sticky elements that were repositioned.
+  // Use removeProperty first to clear any !important flag, then re-set
+  // the original value.
   document.querySelectorAll(".__screenshot-repositioned__").forEach((el) => {
-    el.style.position = el.dataset.__screenshotOldPosition || "";
+    const old = el.dataset.__screenshotOldPosition || "";
+    el.style.removeProperty("position");
+    if (old) el.style.position = old;
     delete el.dataset.__screenshotOldPosition;
     el.classList.remove("__screenshot-repositioned__");
   });
   document.querySelectorAll(".__screenshot-expanded__").forEach((el) => {
-    el.style.overflow = el.dataset.__screenshotOldOverflow || "";
-    el.style.height = el.dataset.__screenshotOldHeight || "";
-    el.style.maxHeight = el.dataset.__screenshotOldMaxHeight || "";
+    const oldOverflow = el.dataset.__screenshotOldOverflow || "";
+    const oldHeight = el.dataset.__screenshotOldHeight || "";
+    const oldMaxHeight = el.dataset.__screenshotOldMaxHeight || "";
+    el.style.removeProperty("overflow");
+    el.style.removeProperty("height");
+    el.style.removeProperty("max-height");
+    if (oldOverflow) el.style.overflow = oldOverflow;
+    if (oldHeight) el.style.height = oldHeight;
+    if (oldMaxHeight) el.style.maxHeight = oldMaxHeight;
     if (el.dataset.__screenshotOldBottom !== undefined) {
-      el.style.bottom = el.dataset.__screenshotOldBottom;
+      el.style.removeProperty("bottom");
+      if (el.dataset.__screenshotOldBottom) {
+        el.style.bottom = el.dataset.__screenshotOldBottom;
+      }
       delete el.dataset.__screenshotOldBottom;
     }
     delete el.dataset.__screenshotOldOverflow;

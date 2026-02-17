@@ -39,36 +39,82 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const debuggee = { tabId };
       try {
         await chrome.debugger.attach(debuggee, "1.3");
+
+        // Get original viewport dimensions (same as captureFullPage)
+        const metrics = await chrome.debugger.sendCommand(
+          debuggee, "Page.getLayoutMetrics"
+        );
+        const viewportWidth = Math.ceil(metrics.cssLayoutViewport.clientWidth);
+        const viewportHeight = Math.ceil(metrics.cssLayoutViewport.clientHeight);
+
+        // Inject lib.js
         await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
           expression: await fetch(chrome.runtime.getURL("lib.js")).then(r => r.text()),
           returnByValue: true
         });
+
+        // Measure + expand (same as captureFullPage)
         const { result } = await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
           expression: `JSON.stringify(measurePageDimensions())`,
           returnByValue: true
         });
         const dims = JSON.parse(result.value);
-        // Apply setDeviceMetricsOverride just like the real capture does.
-        // This stretches the viewport so fixed elements behave the same way
-        // as they do during an actual full-page screenshot.
-        const metrics = await chrome.debugger.sendCommand(
-          debuggee, "Page.getLayoutMetrics"
-        );
-        const viewportWidth = Math.ceil(metrics.cssLayoutViewport.clientWidth);
-        await chrome.debugger.sendCommand(
-          debuggee, "Emulation.setDeviceMetricsOverride",
-          { width: viewportWidth, height: dims.height, deviceScaleFactor: 0, mobile: false }
-        );
-        // Make the page scrollable so we can inspect the expanded layout.
+
+        // Skip scrollbar hiding in debug mode. Instead, force overflow:auto
+        // on html+body so we get a scrollbar for inspecting the tall content.
+        // (captureFullPage uses overflow:visible + hidden scrollbars, but for
+        // debug we need to be able to scroll.)
         await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
           expression: `
-            document.documentElement.style.overflow = 'auto';
-            document.body.style.overflow = 'auto';
-            document.body.style.minHeight = '${dims.height}px';
+            document.documentElement.style.setProperty('overflow', 'auto', 'important');
+            document.body.style.setProperty('overflow', 'auto', 'important');
           `,
           returnByValue: true
         });
-        // Keep debugger attached so page stays in expanded state
+
+        // Suppress viewport size overlay
+        try {
+          await chrome.debugger.sendCommand(debuggee,
+            "Overlay.setShowViewportSizeOnResize", { show: false }
+          );
+        } catch (_) {}
+
+        // Block resize / ResizeObserver (same as captureFullPage)
+        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: `(() => {
+            window.__screenshotResizeBlocker = (e) => {
+              e.stopImmediatePropagation();
+            };
+            window.addEventListener('resize', window.__screenshotResizeBlocker, true);
+            if (window.ResizeObserver) {
+              window.__screenshotOrigResizeObserver = window.ResizeObserver;
+              window.ResizeObserver = class {
+                constructor() {}
+                observe() {}
+                unobserve() {}
+                disconnect() {}
+              };
+            }
+          })()`,
+          returnByValue: true
+        });
+
+        // setDeviceMetricsOverride — use the ORIGINAL viewport height so
+        // you can still scroll to inspect. The DOM changes are identical
+        // to captureFullPage; only the viewport height differs (capture
+        // uses dims.height). This triggers resize events and re-layout
+        // even at the original size, reproducing the framework interference
+        // that the resize blocker must handle.
+        await chrome.debugger.sendCommand(debuggee,
+          "Emulation.setDeviceMetricsOverride", {
+            width: viewportWidth,
+            height: viewportHeight,
+            deviceScaleFactor: 1,  // Force DPR=1 to match capture path
+            mobile: false
+          }
+        );
+
+        // Keep debugger attached so user can scroll and inspect
         sendResponse({ dims });
       } catch (err) {
         console.error("debug-expand error:", err);
@@ -83,18 +129,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const tabId = tabs[0].id;
       const debuggee = { tabId };
       try {
-        await chrome.debugger.sendCommand(
-          debuggee, "Emulation.clearDeviceMetricsOverride"
+        // Clear viewport override
+        await chrome.debugger.sendCommand(debuggee,
+          "Emulation.clearDeviceMetricsOverride"
         );
+
+        // Restore resize / ResizeObserver
+        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: `(() => {
+            if (window.__screenshotResizeBlocker) {
+              window.removeEventListener('resize', window.__screenshotResizeBlocker, true);
+              delete window.__screenshotResizeBlocker;
+            }
+            if (window.__screenshotOrigResizeObserver) {
+              window.ResizeObserver = window.__screenshotOrigResizeObserver;
+              delete window.__screenshotOrigResizeObserver;
+            }
+          })()`,
+          returnByValue: true
+        });
+
+        // Restore expanded containers + scrollbar style + debug overflow
         await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
           expression: `
-            document.documentElement.style.overflow = '';
-            document.body.style.overflow = '';
-            document.body.style.minHeight = '';
+            document.documentElement.style.removeProperty('overflow');
+            document.body.style.removeProperty('overflow');
             restoreExpandedContainers()
           `,
           returnByValue: true
         });
+
         await chrome.debugger.detach(debuggee);
       } catch (err) {
         console.error("debug-restore error:", err);
@@ -201,33 +265,90 @@ async function captureFullPage(tab) {
       );
     } catch (_) {}
 
-    // Resize the viewport to the full page height so Chrome performs a
-    // proper layout pass for all below-the-fold content. Without this,
-    // captureBeyondViewport can intermittently duplicate or misrender
-    // content that was never actually laid out.
+    // Block resize / ResizeObserver events so that setDeviceMetricsOverride
+    // doesn't trigger framework re-renders that undo our DOM changes.
+    // SPA frameworks (React, etc.) listen for resize events and may restore
+    // position:fixed, overflow:hidden, and position:sticky — undoing the
+    // expansion and repositioning done by measurePageDimensions().
+    await chrome.debugger.sendCommand(
+      debuggee,
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          window.__screenshotResizeBlocker = (e) => {
+            e.stopImmediatePropagation();
+          };
+          window.addEventListener('resize', window.__screenshotResizeBlocker, true);
+
+          // Also suppress ResizeObserver callbacks — many frameworks use
+          // these instead of (or alongside) the resize event.
+          if (window.ResizeObserver) {
+            window.__screenshotOrigResizeObserver = window.ResizeObserver;
+            const Orig = window.ResizeObserver;
+            window.ResizeObserver = class {
+              constructor() {}
+              observe() {}
+              unobserve() {}
+              disconnect() {}
+            };
+            // Disconnect existing observers by patching the prototype
+            // temporarily — new observers created during resize will be no-ops.
+          }
+        })()`,
+        returnByValue: true
+      }
+    );
+
+    // Set viewport to exact content height with DPR=1.
+    // DPR must be forced to 1 to avoid Chrome GPU texture limits (16384px).
+    // At 150% Windows scaling (DPR=1.5), an 11000px page becomes 16500
+    // physical pixels — exceeding the limit and causing Chrome's compositor
+    // to tile/repeat the rendered content.
     await chrome.debugger.sendCommand(
       debuggee,
       "Emulation.setDeviceMetricsOverride",
       {
         width: viewportWidth,
-        height,
-        deviceScaleFactor: 0,  // 0 = keep the browser's actual DPR
+        height: height,
+        deviceScaleFactor: 1,
         mobile: false
       }
     );
 
-    // Capture the full page — the viewport now matches content height,
-    // so a standard screenshot gets everything.
+    // Capture with a clip rect matching the exact content dimensions
     const result = await chrome.debugger.sendCommand(
       debuggee,
       "Page.captureScreenshot",
-      { format: "png" }
+      {
+        format: "png",
+        clip: { x: 0, y: 0, width: viewportWidth, height: height, scale: 1 }
+      }
     );
 
     // Clear the emulation override (restores original viewport)
     await chrome.debugger.sendCommand(
       debuggee,
       "Emulation.clearDeviceMetricsOverride"
+    );
+
+    // Restore resize / ResizeObserver handling before restoring containers,
+    // so the framework can respond normally to subsequent layout changes.
+    await chrome.debugger.sendCommand(
+      debuggee,
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          if (window.__screenshotResizeBlocker) {
+            window.removeEventListener('resize', window.__screenshotResizeBlocker, true);
+            delete window.__screenshotResizeBlocker;
+          }
+          if (window.__screenshotOrigResizeObserver) {
+            window.ResizeObserver = window.__screenshotOrigResizeObserver;
+            delete window.__screenshotOrigResizeObserver;
+          }
+        })()`,
+        returnByValue: true
+      }
     );
 
     // Clean up: remove scrollbar-hiding style and restore expanded containers
@@ -310,12 +431,19 @@ function showPreview(tabId, base64Data) {
 
       // --- Label ---
       const label = document.createElement("div");
-      label.textContent = "Copied to clipboard \u2713";
       label.style.cssText = `
         color: #4ade80; font-size: 12px; font-weight: 500;
         padding: 8px 12px; flex-shrink: 0;
         border-bottom: 1px solid rgba(255,255,255,0.1);
+        display: flex; justify-content: space-between; align-items: center;
       `;
+      const labelText = document.createElement("span");
+      labelText.textContent = "Copied to clipboard \u2713";
+      const labelDims = document.createElement("span");
+      labelDims.style.cssText = "color: #9ca3af; font-size: 11px; font-weight: 400;";
+      labelDims.textContent = "loading\u2026";
+      label.appendChild(labelText);
+      label.appendChild(labelDims);
 
       // --- Scrollable image container ---
       const imgWrap = document.createElement("div");
@@ -331,6 +459,9 @@ function showPreview(tabId, base64Data) {
         display: block; width: 100%;
         border-radius: 0 0 8px 8px;
       `;
+      img.addEventListener("load", () => {
+        labelDims.textContent = `${img.naturalWidth} \u00d7 ${img.naturalHeight} px`;
+      });
 
       imgWrap.appendChild(img);
       panel.appendChild(label);
