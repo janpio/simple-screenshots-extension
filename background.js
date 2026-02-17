@@ -59,7 +59,7 @@ async function captureScreenshot(tab, fullPage) {
 
     await copyToClipboard(tab.id, base64Data);
     showBadge("✓", "#22c55e");
-    showFlash(tab.id);
+    showPreview(tab.id, base64Data);
   } catch (err) {
     console.error("Screenshot error:", err);
     showBadge("✗", "#ef4444");
@@ -205,57 +205,119 @@ function showBadge(text, color) {
   setTimeout(() => chrome.action.setBadgeText({ text: "" }), 2000);
 }
 
-function showFlash(tabId) {
+function showPreview(tabId, base64Data) {
   chrome.scripting.executeScript({
     target: { tabId },
-    func: () => {
-      const overlay = document.createElement("div");
-      overlay.style.cssText = `
-        position: fixed;
-        inset: 0;
-        z-index: 2147483647;
-        pointer-events: none;
+    func: (b64) => {
+      // Remove any existing preview
+      document.getElementById("__screenshot-preview__")?.remove();
+
+      const FADE_TIMEOUT = 4000; // ms before auto-fade starts
+      let timer = null;
+
+      // --- Backdrop ---
+      const backdrop = document.createElement("div");
+      backdrop.id = "__screenshot-preview__";
+      backdrop.style.cssText = `
+        position: fixed; inset: 0; z-index: 2147483647;
+        background: rgba(0,0,0,0.5); cursor: not-allowed;
+        display: flex; align-items: flex-start; justify-content: flex-end;
+        padding: 12px;
+        opacity: 0; transition: opacity 0.2s ease-out;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       `;
-      document.documentElement.appendChild(overlay);
 
-      // Three-phase shutter: white → black → fade out
-      // Visible on any background color.
-      const phases = [
-        { bg: "white", opacity: "1", duration: 0.1 },
-        { bg: "black", opacity: "0.3", duration: 0.1 },
-        { bg: "black", opacity: "0", duration: 0.3 },
-      ];
+      // --- Panel (minimap-style, right side) ---
+      const panel = document.createElement("div");
+      panel.style.cssText = `
+        background: #1a1a1a; border-radius: 8px; cursor: default;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        display: flex; flex-direction: column;
+        max-height: calc(100vh - 24px);
+        width: 460px; overflow: hidden;
+      `;
 
-      let i = 0;
-      function nextPhase() {
-        if (i >= phases.length) {
-          overlay.remove();
-          return;
-        }
-        const p = phases[i++];
-        overlay.style.transition = "none";
-        overlay.style.background = p.bg;
-        overlay.style.opacity = p.opacity;
+      // --- Label ---
+      const label = document.createElement("div");
+      label.textContent = "Copied to clipboard \u2713";
+      label.style.cssText = `
+        color: #4ade80; font-size: 12px; font-weight: 500;
+        padding: 8px 12px; flex-shrink: 0;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+      `;
 
-        requestAnimationFrame(() => {
-          const next = phases[i];
-          if (next) {
-            overlay.style.transition = `opacity ${next.duration}s ease-out, background ${next.duration}s ease-out`;
-            requestAnimationFrame(() => {
-              overlay.style.background = next.bg;
-              overlay.style.opacity = next.opacity;
-              overlay.addEventListener("transitionend", () => {
-                i++;
-                nextPhase();
-              }, { once: true });
-            });
-          } else {
-            overlay.remove();
-          }
-        });
+      // --- Scrollable image container ---
+      const imgWrap = document.createElement("div");
+      imgWrap.tabIndex = -1; // allow focus for immediate scroll
+      imgWrap.style.cssText = `
+        overflow-y: auto; overflow-x: hidden;
+        flex: 1; min-height: 0; outline: none;
+      `;
+
+      const img = document.createElement("img");
+      img.src = `data:image/png;base64,${b64}`;
+      img.style.cssText = `
+        display: block; width: 100%;
+        border-radius: 0 0 8px 8px;
+      `;
+
+      imgWrap.appendChild(img);
+      panel.appendChild(label);
+      panel.appendChild(imgWrap);
+      backdrop.appendChild(panel);
+      document.documentElement.appendChild(backdrop);
+
+      // Fade in and focus the scroll area so it responds to wheel immediately
+      requestAnimationFrame(() => {
+        backdrop.style.opacity = "1";
+        imgWrap.focus();
+      });
+
+      // --- Dismiss helpers ---
+      function dismiss() {
+        clearTimeout(timer);
+        backdrop.style.opacity = "0";
+        backdrop.addEventListener("transitionend", () => backdrop.remove(), { once: true });
       }
 
-      nextPhase();
-    }
+      function resetTimer() {
+        clearTimeout(timer);
+        timer = setTimeout(dismiss, FADE_TIMEOUT);
+      }
+
+      // --- Events ---
+      // Block all pointer events from reaching the page beneath
+      for (const evt of ["click", "mousedown", "mouseup", "pointerdown", "pointerup"]) {
+        backdrop.addEventListener(evt, (e) => {
+          e.stopPropagation();
+          // Click on backdrop (outside panel) → dismiss
+          if (evt === "click" && e.target === backdrop) dismiss();
+        }, true);
+      }
+
+      // Escape → dismiss
+      function onKey(e) {
+        if (e.key === "Escape") {
+          dismiss();
+          document.removeEventListener("keydown", onKey);
+        }
+      }
+      document.addEventListener("keydown", onKey);
+
+      // Scroll anywhere on the panel → scroll the image container
+      // (prevents needing to click into the panel first)
+      panel.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        imgWrap.scrollTop += e.deltaY;
+      }, { passive: false });
+
+      // Hover panel → pause timer; leave → restart
+      panel.addEventListener("mouseenter", () => clearTimeout(timer));
+      panel.addEventListener("mouseleave", resetTimer);
+
+      // Start auto-dismiss timer
+      resetTimer();
+    },
+    args: [base64Data]
   }).catch(() => {}); // ignore errors on restricted pages
 }
