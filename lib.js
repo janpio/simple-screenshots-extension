@@ -60,6 +60,9 @@ function measurePageDimensions() {
   // If we found a nested scroll container, expand it so the browser
   // renders all content for the screenshot.
   if (scrollContainer) {
+    // Scroll to top so all content is captured from the beginning
+    scrollContainer.scrollTop = 0;
+
     scrollContainer.dataset.__screenshotOldOverflow =
       scrollContainer.style.overflow;
     scrollContainer.dataset.__screenshotOldHeight =
@@ -79,18 +82,50 @@ function measurePageDimensions() {
         parent.dataset.__screenshotOldOverflow = parent.style.overflow;
         parent.dataset.__screenshotOldHeight = parent.style.height;
         parent.dataset.__screenshotOldMaxHeight = parent.style.maxHeight;
+        parent.dataset.__screenshotOldBottom = parent.style.bottom;
         parent.style.overflow = "visible";
         parent.style.height = "auto";
         parent.style.maxHeight = "none";
+        // Fixed/absolute elements with both top+bottom set have their height
+        // implicitly constrained. Clear bottom so they can grow freely.
+        if (ps.position === "fixed" || ps.position === "absolute") {
+          parent.style.bottom = "auto";
+        }
         parent.classList.add("__screenshot-expanded__");
       }
       parent = parent.parentElement;
     }
 
-    // Re-measure after expanding
+    // If the scroll container lives inside a fixed/absolute overlay (modal,
+    // drawer, etc.), hide everything else on the page so only the overlay
+    // content appears in the screenshot.
+    let overlayAncestor = scrollContainer.parentElement;
+    while (overlayAncestor && overlayAncestor !== document.body) {
+      const os = getComputedStyle(overlayAncestor);
+      if (os.position === "fixed" || os.position === "absolute") {
+        break;
+      }
+      overlayAncestor = overlayAncestor.parentElement;
+    }
+    if (overlayAncestor && overlayAncestor !== document.body) {
+      for (const sibling of overlayAncestor.parentElement.children) {
+        if (sibling === overlayAncestor) continue;
+        const ss = getComputedStyle(sibling);
+        if (ss.display === "none" || sibling.tagName === "SCRIPT") continue;
+        sibling.dataset.__screenshotOldDisplay = sibling.style.display;
+        sibling.style.display = "none";
+        sibling.classList.add("__screenshot-hidden__");
+      }
+    }
+
+    // Re-measure after expanding. Use getBoundingClientRect() on the
+    // expanded container as well, because position:fixed elements (e.g.
+    // modals/drawers) don't contribute to document.scrollHeight.
+    const expandedRect = scrollContainer.getBoundingClientRect();
     h = Math.max(
       document.documentElement.scrollHeight,
-      document.body ? document.body.scrollHeight : 0
+      document.body ? document.body.scrollHeight : 0,
+      Math.ceil(expandedRect.bottom + window.scrollY)
     );
     w = Math.max(
       document.documentElement.scrollWidth,
@@ -107,10 +142,20 @@ function measurePageDimensions() {
  */
 function restoreExpandedContainers() {
   document.getElementById("__screenshot-hide-scrollbars__")?.remove();
+  // Restore siblings that were hidden for modal/overlay capture
+  document.querySelectorAll(".__screenshot-hidden__").forEach((el) => {
+    el.style.display = el.dataset.__screenshotOldDisplay || "";
+    delete el.dataset.__screenshotOldDisplay;
+    el.classList.remove("__screenshot-hidden__");
+  });
   document.querySelectorAll(".__screenshot-expanded__").forEach((el) => {
     el.style.overflow = el.dataset.__screenshotOldOverflow || "";
     el.style.height = el.dataset.__screenshotOldHeight || "";
     el.style.maxHeight = el.dataset.__screenshotOldMaxHeight || "";
+    if (el.dataset.__screenshotOldBottom !== undefined) {
+      el.style.bottom = el.dataset.__screenshotOldBottom;
+      delete el.dataset.__screenshotOldBottom;
+    }
     delete el.dataset.__screenshotOldOverflow;
     delete el.dataset.__screenshotOldHeight;
     delete el.dataset.__screenshotOldMaxHeight;

@@ -326,6 +326,158 @@ describe("measurePageDimensions — multiple scroll containers", () => {
 });
 
 // ---------------------------------------------------------------------------
+// measurePageDimensions — modal/drawer with position:fixed parent
+// ---------------------------------------------------------------------------
+describe("measurePageDimensions — fixed-position modal", () => {
+  function setupModalPage() {
+    const win = createWindow(`<!DOCTYPE html>
+      <html>
+      <body style="overflow: hidden; margin: 0;">
+        <div id="page-content">background page</div>
+        <div id="dialog" style="position: fixed; overflow: hidden; height: 100%;">
+          <div id="modal-scroll" style="overflow-y: auto; height: 90%;">
+            <div id="modal-content" style="height: 11000px;">modal content</div>
+          </div>
+        </div>
+      </body>
+      </html>`);
+
+    const doc = win.document;
+    const dialog = doc.getElementById("dialog");
+    const modalScroll = doc.getElementById("modal-scroll");
+
+    // Stub scrollHeight/clientHeight for the modal scroll container
+    Object.defineProperty(modalScroll, "scrollHeight", {
+      value: 11000,
+      configurable: true,
+    });
+    Object.defineProperty(modalScroll, "clientHeight", {
+      value: 900,
+      configurable: true,
+    });
+    Object.defineProperty(modalScroll, "scrollWidth", {
+      value: 800,
+      configurable: true,
+    });
+
+    // Document scrollHeight stays small even after expansion because
+    // fixed-position elements don't contribute to document flow.
+    Object.defineProperty(doc.documentElement, "scrollHeight", {
+      value: 980,
+      configurable: true,
+    });
+    Object.defineProperty(doc.documentElement, "scrollWidth", {
+      value: 1200,
+      configurable: true,
+    });
+    Object.defineProperty(doc.body, "scrollHeight", {
+      value: 980,
+      configurable: true,
+    });
+    Object.defineProperty(doc.body, "scrollWidth", {
+      value: 1200,
+      configurable: true,
+    });
+
+    // After expansion, getBoundingClientRect on the scroll container
+    // should reflect its expanded size.
+    modalScroll.getBoundingClientRect = () => ({
+      top: 50,
+      left: 400,
+      width: 800,
+      height: 11000,
+      bottom: 11050,
+      right: 1200,
+    });
+
+    // Stub window.scrollY
+    Object.defineProperty(win, "scrollY", {
+      value: 0,
+      configurable: true,
+    });
+
+    return { win, doc, dialog, modalScroll };
+  }
+
+  it("detects the modal scroll container and returns its full height", () => {
+    const { win } = setupModalPage();
+    const dims = win.measurePageDimensions();
+
+    // Height should be at least 11050 (expandedRect.bottom + scrollY)
+    // even though document.scrollHeight is only 980
+    assert.ok(
+      dims.height >= 11050,
+      `Expected height >= 11050 but got ${dims.height}`
+    );
+  });
+
+  it("expands the fixed-position dialog parent and clears bottom", () => {
+    const { win, dialog } = setupModalPage();
+
+    // Simulate a dialog constrained by top+bottom (common for drawers)
+    dialog.style.top = "8px";
+    dialog.style.bottom = "8px";
+
+    win.measurePageDimensions();
+
+    assert.ok(
+      dialog.classList.contains("__screenshot-expanded__"),
+      "Dialog parent should be expanded"
+    );
+    assert.equal(dialog.style.getPropertyValue("overflow"), "visible");
+    assert.equal(dialog.style.height, "auto");
+    assert.equal(
+      dialog.style.bottom,
+      "auto",
+      "Bottom should be cleared so fixed element can grow"
+    );
+  });
+
+  it("scrolls the container to top before expansion", () => {
+    const { win, modalScroll } = setupModalPage();
+
+    // Simulate the user having scrolled partway down
+    modalScroll.scrollTop = 500;
+
+    win.measurePageDimensions();
+
+    assert.equal(
+      modalScroll.scrollTop,
+      0,
+      "Scroll container should be scrolled to top"
+    );
+  });
+
+  it("hides siblings of the fixed-position overlay during capture", () => {
+    const { win, doc } = setupModalPage();
+    const pageContent = doc.getElementById("page-content");
+
+    win.measurePageDimensions();
+
+    assert.ok(
+      pageContent.classList.contains("__screenshot-hidden__"),
+      "Page content sibling should be hidden"
+    );
+    assert.equal(pageContent.style.display, "none");
+  });
+
+  it("restoreExpandedContainers restores hidden siblings", () => {
+    const { win, doc } = setupModalPage();
+    const pageContent = doc.getElementById("page-content");
+
+    // Set an original inline display
+    pageContent.style.display = "block";
+
+    win.measurePageDimensions();
+    assert.equal(pageContent.style.display, "none");
+
+    win.restoreExpandedContainers();
+    assert.equal(pageContent.style.display, "block");
+    assert.ok(!pageContent.classList.contains("__screenshot-hidden__"));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // restoreExpandedContainers
 // ---------------------------------------------------------------------------
 describe("restoreExpandedContainers", () => {
@@ -391,6 +543,34 @@ describe("restoreExpandedContainers", () => {
     assert.equal(el.dataset.__screenshotOldOverflow, undefined);
     assert.equal(el.dataset.__screenshotOldHeight, undefined);
     assert.equal(el.dataset.__screenshotOldMaxHeight, undefined);
+  });
+
+  it("restores bottom on fixed-position elements", () => {
+    const win = createWindow(`<!DOCTYPE html>
+      <html>
+      <body>
+        <div id="el" style="position: fixed; bottom: 8px;">content</div>
+      </body>
+      </html>`);
+
+    const doc = win.document;
+    const el = doc.getElementById("el");
+
+    // Manually set up as if measurePageDimensions expanded it
+    el.dataset.__screenshotOldOverflow = "";
+    el.dataset.__screenshotOldHeight = "";
+    el.dataset.__screenshotOldMaxHeight = "";
+    el.dataset.__screenshotOldBottom = "8px";
+    el.style.overflow = "visible";
+    el.style.height = "auto";
+    el.style.maxHeight = "none";
+    el.style.bottom = "auto";
+    el.classList.add("__screenshot-expanded__");
+
+    win.restoreExpandedContainers();
+
+    assert.equal(el.style.bottom, "8px");
+    assert.equal(el.dataset.__screenshotOldBottom, undefined);
   });
 });
 
