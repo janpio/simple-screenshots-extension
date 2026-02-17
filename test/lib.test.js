@@ -334,9 +334,12 @@ describe("measurePageDimensions — fixed-position modal", () => {
       <html>
       <body style="overflow: hidden; margin: 0;">
         <div id="page-content">background page</div>
+        <div id="fixed-sidebar" style="position: fixed; top: 0; bottom: 0; left: 0; width: 232px;">sidebar</div>
         <div id="dialog" style="position: fixed; overflow: hidden; height: 100%;">
+          <div id="sticky-header" style="position: sticky; top: 0;">Edit Brand Kit</div>
           <div id="modal-scroll" style="overflow-y: auto; height: 90%;">
             <div id="modal-content" style="height: 11000px;">modal content</div>
+            <button id="sticky-save" style="position: sticky; bottom: 24px;">Save</button>
           </div>
         </div>
       </body>
@@ -448,32 +451,119 @@ describe("measurePageDimensions — fixed-position modal", () => {
     );
   });
 
-  it("hides siblings of the fixed-position overlay during capture", () => {
+  it("does not hide page content siblings behind the modal", () => {
     const { win, doc } = setupModalPage();
     const pageContent = doc.getElementById("page-content");
+
+    win.measurePageDimensions();
+
+    // Page content should remain visible — we want a normal full-page
+    // screenshot with the modal expanded, not a cropped modal-only view.
+    assert.ok(
+      !pageContent.classList.contains("__screenshot-hidden__"),
+      "Page content sibling should NOT be hidden"
+    );
+    assert.notEqual(pageContent.style.display, "none");
+  });
+
+  it("switches position:fixed to position:absolute on overlay ancestor", () => {
+    const { win, doc, dialog } = setupModalPage();
 
     win.measurePageDimensions();
 
     assert.ok(
-      pageContent.classList.contains("__screenshot-hidden__"),
-      "Page content sibling should be hidden"
+      dialog.classList.contains("__screenshot-repositioned__"),
+      "Dialog should be marked as repositioned"
     );
-    assert.equal(pageContent.style.display, "none");
+    assert.equal(
+      dialog.style.position,
+      "absolute",
+      "Fixed overlay should be switched to absolute to prevent duplication"
+    );
   });
 
-  it("restoreExpandedContainers restores hidden siblings", () => {
-    const { win, doc } = setupModalPage();
-    const pageContent = doc.getElementById("page-content");
-
-    // Set an original inline display
-    pageContent.style.display = "block";
+  it("restoreExpandedContainers restores position:fixed on overlay", () => {
+    const { win, doc, dialog } = setupModalPage();
 
     win.measurePageDimensions();
-    assert.equal(pageContent.style.display, "none");
+    assert.equal(dialog.style.position, "absolute");
 
     win.restoreExpandedContainers();
-    assert.equal(pageContent.style.display, "block");
-    assert.ok(!pageContent.classList.contains("__screenshot-hidden__"));
+    assert.equal(
+      dialog.style.position,
+      "fixed",
+      "Position should be restored to original fixed"
+    );
+    assert.ok(!dialog.classList.contains("__screenshot-repositioned__"));
+  });
+
+  it("leaves other fixed elements untouched", () => {
+    const { win, doc } = setupModalPage();
+    const sidebar = doc.getElementById("fixed-sidebar");
+
+    win.measurePageDimensions();
+
+    // The sidebar is a separate position:fixed element (not the overlay).
+    // It should be completely untouched — no class, no style changes.
+    assert.equal(
+      sidebar.style.position,
+      "fixed",
+      "Sidebar should remain position:fixed"
+    );
+    assert.ok(
+      !sidebar.classList.contains("__screenshot-repositioned__"),
+      "Sidebar should not be marked as repositioned"
+    );
+    assert.ok(
+      !sidebar.classList.contains("__screenshot-expanded__"),
+      "Sidebar should not be marked as expanded"
+    );
+  });
+
+  it("neutralises position:sticky elements inside the scroll container", () => {
+    const { win, doc } = setupModalPage();
+    const stickyHeader = doc.getElementById("sticky-header");
+    const stickySave = doc.getElementById("sticky-save");
+
+    win.measurePageDimensions();
+
+    assert.equal(
+      stickyHeader.style.position,
+      "relative",
+      "Sticky header should be switched to relative"
+    );
+    assert.ok(stickyHeader.classList.contains("__screenshot-repositioned__"));
+
+    assert.equal(
+      stickySave.style.position,
+      "relative",
+      "Sticky save button should be switched to relative"
+    );
+    assert.ok(stickySave.classList.contains("__screenshot-repositioned__"));
+  });
+
+  it("restoreExpandedContainers restores sticky elements", () => {
+    const { win, doc } = setupModalPage();
+    const stickyHeader = doc.getElementById("sticky-header");
+    const stickySave = doc.getElementById("sticky-save");
+
+    win.measurePageDimensions();
+    assert.equal(stickyHeader.style.position, "relative");
+    assert.equal(stickySave.style.position, "relative");
+
+    win.restoreExpandedContainers();
+    assert.equal(
+      stickyHeader.style.position,
+      "sticky",
+      "Sticky header position should be restored"
+    );
+    assert.equal(
+      stickySave.style.position,
+      "sticky",
+      "Sticky save button position should be restored"
+    );
+    assert.ok(!stickyHeader.classList.contains("__screenshot-repositioned__"));
+    assert.ok(!stickySave.classList.contains("__screenshot-repositioned__"));
   });
 });
 

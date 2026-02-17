@@ -97,8 +97,9 @@ function measurePageDimensions() {
     }
 
     // If the scroll container lives inside a fixed/absolute overlay (modal,
-    // drawer, etc.), hide everything else on the page so only the overlay
-    // content appears in the screenshot.
+    // drawer, etc.), convert it to position:absolute so it renders once in
+    // the document flow instead of repeating at every viewport-height
+    // interval during full-page capture.
     let overlayAncestor = scrollContainer.parentElement;
     while (overlayAncestor && overlayAncestor !== document.body) {
       const os = getComputedStyle(overlayAncestor);
@@ -108,19 +109,34 @@ function measurePageDimensions() {
       overlayAncestor = overlayAncestor.parentElement;
     }
     if (overlayAncestor && overlayAncestor !== document.body) {
-      for (const sibling of overlayAncestor.parentElement.children) {
-        if (sibling === overlayAncestor) continue;
-        const ss = getComputedStyle(sibling);
-        if (ss.display === "none" || sibling.tagName === "SCRIPT") continue;
-        sibling.dataset.__screenshotOldDisplay = sibling.style.display;
-        sibling.style.display = "none";
-        sibling.classList.add("__screenshot-hidden__");
+      const oas = getComputedStyle(overlayAncestor);
+      if (oas.position === "fixed") {
+        overlayAncestor.dataset.__screenshotOldPosition =
+          overlayAncestor.style.position;
+        overlayAncestor.style.position = "absolute";
+        overlayAncestor.classList.add("__screenshot-repositioned__");
       }
     }
 
+    // Neutralise position:sticky elements. Once the container is expanded
+    // (overflow:visible, height:auto) sticky elements lose their scroll
+    // context and can repeat or stick at wrong positions during full-page
+    // capture. Scan the overlay ancestor (which may contain sticky headers
+    // outside the scroll container) or fall back to the scroll container.
+    const stickyRoot = overlayAncestor !== document.body
+      ? overlayAncestor
+      : scrollContainer;
+    stickyRoot.querySelectorAll("*").forEach((el) => {
+      if (getComputedStyle(el).position === "sticky") {
+        el.dataset.__screenshotOldPosition = el.style.position;
+        el.style.position = "relative";
+        el.classList.add("__screenshot-repositioned__");
+      }
+    });
+
     // Re-measure after expanding. Use getBoundingClientRect() on the
-    // expanded container as well, because position:fixed elements (e.g.
-    // modals/drawers) don't contribute to document.scrollHeight.
+    // expanded container as well, because position:absolute elements
+    // (converted from fixed) don't contribute to document.scrollHeight.
     const expandedRect = scrollContainer.getBoundingClientRect();
     h = Math.max(
       document.documentElement.scrollHeight,
@@ -142,11 +158,11 @@ function measurePageDimensions() {
  */
 function restoreExpandedContainers() {
   document.getElementById("__screenshot-hide-scrollbars__")?.remove();
-  // Restore siblings that were hidden for modal/overlay capture
-  document.querySelectorAll(".__screenshot-hidden__").forEach((el) => {
-    el.style.display = el.dataset.__screenshotOldDisplay || "";
-    delete el.dataset.__screenshotOldDisplay;
-    el.classList.remove("__screenshot-hidden__");
+  // Restore position:fixed on overlays that were switched to absolute
+  document.querySelectorAll(".__screenshot-repositioned__").forEach((el) => {
+    el.style.position = el.dataset.__screenshotOldPosition || "";
+    delete el.dataset.__screenshotOldPosition;
+    el.classList.remove("__screenshot-repositioned__");
   });
   document.querySelectorAll(".__screenshot-expanded__").forEach((el) => {
     el.style.overflow = el.dataset.__screenshotOldOverflow || "";
