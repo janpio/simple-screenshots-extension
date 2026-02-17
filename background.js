@@ -32,6 +32,77 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         captureScreenshot(tabs[0], msg.fullPage);
       }
     });
+  } else if (msg.action === "debug-expand") {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (!tabs[0]) return;
+      const tabId = tabs[0].id;
+      const debuggee = { tabId };
+      try {
+        await chrome.debugger.attach(debuggee, "1.3");
+        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: await fetch(chrome.runtime.getURL("lib.js")).then(r => r.text()),
+          returnByValue: true
+        });
+        const { result } = await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: `JSON.stringify(measurePageDimensions())`,
+          returnByValue: true
+        });
+        const dims = JSON.parse(result.value);
+        // Apply setDeviceMetricsOverride just like the real capture does.
+        // This stretches the viewport so fixed elements behave the same way
+        // as they do during an actual full-page screenshot.
+        const metrics = await chrome.debugger.sendCommand(
+          debuggee, "Page.getLayoutMetrics"
+        );
+        const viewportWidth = Math.ceil(metrics.cssLayoutViewport.clientWidth);
+        await chrome.debugger.sendCommand(
+          debuggee, "Emulation.setDeviceMetricsOverride",
+          { width: viewportWidth, height: dims.height, deviceScaleFactor: 0, mobile: false }
+        );
+        // Make the page scrollable so we can inspect the expanded layout.
+        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: `
+            document.documentElement.style.overflow = 'auto';
+            document.body.style.overflow = 'auto';
+            document.body.style.minHeight = '${dims.height}px';
+          `,
+          returnByValue: true
+        });
+        // Keep debugger attached so page stays in expanded state
+        sendResponse({ dims });
+      } catch (err) {
+        console.error("debug-expand error:", err);
+        try { await chrome.debugger.detach(debuggee); } catch (_) {}
+        sendResponse({ error: err.message });
+      }
+    });
+    return true; // async sendResponse
+  } else if (msg.action === "debug-restore") {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (!tabs[0]) return;
+      const tabId = tabs[0].id;
+      const debuggee = { tabId };
+      try {
+        await chrome.debugger.sendCommand(
+          debuggee, "Emulation.clearDeviceMetricsOverride"
+        );
+        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: `
+            document.documentElement.style.overflow = '';
+            document.body.style.overflow = '';
+            document.body.style.minHeight = '';
+            restoreExpandedContainers()
+          `,
+          returnByValue: true
+        });
+        await chrome.debugger.detach(debuggee);
+      } catch (err) {
+        console.error("debug-restore error:", err);
+        try { await chrome.debugger.detach(debuggee); } catch (_) {}
+      }
+      sendResponse({});
+    });
+    return true; // async sendResponse
   }
 });
 
