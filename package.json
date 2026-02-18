@@ -5,5 +5,8 @@
   },
   "devDependencies": {
     "jsdom": "^26.0.0"
+  },
+  "dependencies": {
+    "canvas": "^3.2.1"
   }
 }
