@@ -110,7 +110,7 @@ async function captureFullPage(tab) {
         returnByValue: true
       }
     );
-    let { width, height } = JSON.parse(dims.value);
+    let { height } = JSON.parse(dims.value);
 
     // Check whether measurePageDimensions found and expanded a nested
     // scroll container (modal/drawer case). This determines DPR strategy.
@@ -125,7 +125,7 @@ async function captureFullPage(tab) {
     const hasExpandedContainers = expandedResult.value > 0;
 
     // Clamp dimensions to safe ranges
-    width = Math.min(Math.max(width, 1), MAX_CAPTURE_WIDTH);
+    // Clamp height to safe capture range (width comes from viewport, not DOM measurement)
     height = Math.min(Math.max(height, 1), MAX_CAPTURE_HEIGHT);
     const captureWidth = Math.min(viewportWidth, MAX_CAPTURE_WIDTH);
 

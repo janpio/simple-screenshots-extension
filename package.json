@@ -1,10 +1,14 @@
 {
   "private": true,
   "scripts": {
-    "test": "node --test test/lib.test.js"
+    "test": "node --test test/lib.test.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "canvas": "^3.2.1",
+    "eslint": "^9.39.2",
     "jsdom": "^26.0.0"
   }
 }

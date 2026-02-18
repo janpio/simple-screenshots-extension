@@ -481,7 +481,7 @@ describe("measurePageDimensions — fixed-position modal", () => {
   });
 
   it("switches position:fixed to position:absolute on overlay ancestor", () => {
-    const { win, doc, dialog } = setupModalPage();
+    const { win, dialog } = setupModalPage();
 
     win.measurePageDimensions();
 
