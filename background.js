@@ -346,7 +346,6 @@ function showPreview(tabId, base64Data) {
       `;
 
       const img = document.createElement("img");
-      img.src = `data:image/png;base64,${b64}`;
       img.style.cssText = `
         display: block; width: 100%;
         border-radius: 0 0 8px 8px;
@@ -354,6 +353,21 @@ function showPreview(tabId, base64Data) {
       img.addEventListener("load", () => {
         labelDims.textContent = `${img.naturalWidth} \u00d7 ${img.naturalHeight} px`;
       });
+
+      // Convert base64 to a blob URL to avoid keeping the large string
+      // in the DOM as a data: URI (which doubles memory usage on tall pages).
+      try {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "image/png" });
+        img.src = URL.createObjectURL(blob);
+        // Revoke the blob URL once the image has loaded to free memory
+        img.addEventListener("load", () => URL.revokeObjectURL(img.src), { once: true });
+      } catch (_) {
+        // Fallback to data URI if blob creation fails
+        img.src = `data:image/png;base64,${b64}`;
+      }
 
       imgWrap.appendChild(img);
       panel.appendChild(label);
