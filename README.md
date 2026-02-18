@@ -2,14 +2,25 @@
 
 A minimal Chrome extension that captures visible-area or full-page screenshots and copies them to the clipboard.
 
+## Screenshot Modes
+
+The extension handles three distinct capture scenarios:
+
+1. **Visible area** — captures exactly what's on screen using `chrome.tabs.captureVisibleTab()`. No debugger needed, instant result at native DPR.
+
+2. **Full page (simple)** — for standard long pages without modals or drawers. Attaches the Chrome debugger, resizes the viewport to the full content height, and captures in one pass. Uses native DPR for sharp output.
+
+3. **Full page (complex — modals/drawers)** — for pages with open scrollable overlays (modals, drawers, sidepanels). Detects nested scroll containers, expands them, converts `position: fixed` to `absolute` and `sticky` to `relative`, blocks resize events to prevent framework re-renders, and forces DPR=1 to stay under Chrome's GPU texture limit (16384px).
+
+The extension auto-detects which full-page path to use — no user action required.
+
 ## Features
 
-- **Visible area** — instant capture via `chrome.tabs.captureVisibleTab()` (no debugger)
-- **Full page** — uses Chrome DevTools Protocol to resize the viewport and capture everything in one pass
 - **Clipboard** — screenshots are copied as PNG directly to the clipboard
 - **Trigger** — right-click context menu or popup from the extension icon
 - **Restricted pages** — buttons are disabled on `chrome://`, `edge://`, `about:`, Web Store, etc.
-- **Feedback** — badge on the icon (⏳ → ✓/✗) and a screen flash on success
+- **Preview** — after capture, shows a minimap-style preview panel with image dimensions
+- **Feedback** — badge on the icon (⏳ → ✓/✗)
 
 ## Installation
 
@@ -33,8 +44,9 @@ popup.html             — Popup UI
 popup.js               — Popup logic
 manifest.json          — Extension manifest (MV3)
 package.json           — Dev dependencies and test script
-test/lib.test.js       — Unit tests
+test/lib.test.js       — Unit tests (31 tests)
 icons/                 — Extension icons (16, 48, 128)
+generate-icons.js      — Dev utility to regenerate icons (requires canvas npm package)
 ```
 
 ## Architecture
@@ -48,9 +60,10 @@ icons/                 — Extension icons (16, 48, 128)
 1. Attach debugger, get viewport width via `Page.getLayoutMetrics`
 2. Inject `lib.js`, call `measurePageDimensions()` — detects nested scroll containers (SPAs with `overflow:hidden` on body) and expands them
 3. Hide viewport size overlay and scrollbars
-4. Resize viewport to full content height (`Emulation.setDeviceMetricsOverride`)
-5. Capture via `Page.captureScreenshot` with `captureBeyondViewport: true`
-6. Clean up, detach debugger (which restores viewport)
+4. Block resize/ResizeObserver events (prevents SPA re-renders during viewport resize)
+5. Resize viewport to full content height (`Emulation.setDeviceMetricsOverride`), using native DPR for simple pages or DPR=1 for complex pages with expanded containers
+6. Capture via `Page.captureScreenshot` with clip rect
+7. Clean up (try/finally): clear emulation, restore events, restore containers, detach debugger
 
 ### Permissions
 
