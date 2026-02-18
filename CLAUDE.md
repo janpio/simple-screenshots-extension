@@ -12,7 +12,7 @@ No build step. Reload the extension at `chrome://extensions` after changes.
 
 ## Gotchas
 
-- **Clipboard requires document focus.** Must call both `chrome.windows.update({ focused: true })` and `chrome.tabs.update({ active: true })` before injecting the clipboard content script, or you get "Document is not focused".
+- **Clipboard requires document focus.** `navigator.clipboard.write()` needs `document.hasFocus()` to be true. We inject a content script into the original tab to write the clipboard. If the user switched away the write fails and a sticky error toast explains what happened. **We never steal focus** (`chrome.windows.update` / `chrome.tabs.update`) — that's disruptive. The offscreen API's `CLIPBOARD` reason does **not** work for `navigator.clipboard.write()` — Chrome still requires real document focus.
 - **`const` bindings don't become `window` properties in a VM context.** In tests, use `win.__evaluate('RESTRICTED_URL_PREFIXES')` to access `const` bindings from `lib.js`. `function` declarations do become globals.
 - **jsdom doesn't do CSS layout.** `scrollHeight`/`clientHeight` are always 0. Tests stub them via `Object.defineProperty` with dynamic getters that react to DOM changes (e.g., checking for `__screenshot-expanded__` class to simulate re-layout after expansion).
 - **`lib.js` is injected into target pages** during full-page capture via `Runtime.evaluate`. It's also loaded by the service worker (`importScripts`) and the popup (`<script>`). Any changes to `lib.js` affect all three contexts.
