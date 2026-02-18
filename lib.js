@@ -27,14 +27,22 @@ function isRestrictedUrl(url) {
  * @returns {{ width: number, height: number }}
  */
 function measurePageDimensions() {
+  // Guard against pages without a body (framesets, edge cases)
+  if (!document.body) {
+    return {
+      width: document.documentElement.scrollWidth || 0,
+      height: document.documentElement.scrollHeight || 0
+    };
+  }
+
   // Standard document-level dimensions
   let w = Math.max(
     document.documentElement.scrollWidth,
-    document.body ? document.body.scrollWidth : 0
+    document.body.scrollWidth
   );
   let h = Math.max(
     document.documentElement.scrollHeight,
-    document.body ? document.body.scrollHeight : 0
+    document.body.scrollHeight
   );
 
   // Look for a nested scroll container that is taller than the viewport
@@ -129,41 +137,38 @@ function measurePageDimensions() {
     const expandedRect = scrollContainer.getBoundingClientRect();
     h = Math.max(
       document.documentElement.scrollHeight,
-      document.body ? document.body.scrollHeight : 0,
+      document.body.scrollHeight,
       Math.ceil(expandedRect.bottom + window.scrollY)
     );
     w = Math.max(
       document.documentElement.scrollWidth,
-      document.body ? document.body.scrollWidth : 0
+      document.body.scrollWidth
     );
 
     // Force body/html to span the full measured height so the document
     // is tall enough for the capture. Without this, the body may stay
     // at viewport height (e.g. 493px) due to overflow:hidden and the
     // absolutely-positioned overlay doesn't extend it.
-    if (document.body) {
-      if (!document.body.classList.contains("__screenshot-expanded__")) {
-        document.body.dataset.__screenshotOldOverflow =
-          document.body.style.overflow;
-        document.body.dataset.__screenshotOldHeight =
-          document.body.style.height;
-        document.body.dataset.__screenshotOldMaxHeight =
-          document.body.style.maxHeight;
-        document.body.classList.add("__screenshot-expanded__");
-      }
-      document.body.dataset.__screenshotOldMinHeight =
-        document.body.style.minHeight || "";
-      document.body.style.setProperty("min-height", h + "px", "important");
+    if (!document.body.classList.contains("__screenshot-expanded__")) {
+      document.body.dataset.__screenshotOldOverflow =
+        document.body.style.overflow;
+      document.body.dataset.__screenshotOldHeight =
+        document.body.style.height;
+      document.body.dataset.__screenshotOldMaxHeight =
+        document.body.style.maxHeight;
+      document.body.classList.add("__screenshot-expanded__");
     }
-    if (document.documentElement) {
-      document.documentElement.dataset.__screenshotOldMinHeight =
-        document.documentElement.style.minHeight || "";
-      document.documentElement.style.setProperty(
-        "min-height",
-        h + "px",
-        "important"
-      );
-    }
+    document.body.dataset.__screenshotOldMinHeight =
+      document.body.style.minHeight || "";
+    document.body.style.setProperty("min-height", h + "px", "important");
+
+    document.documentElement.dataset.__screenshotOldMinHeight =
+      document.documentElement.style.minHeight || "";
+    document.documentElement.style.setProperty(
+      "min-height",
+      h + "px",
+      "important"
+    );
   }
 
   return { width: w, height: h };

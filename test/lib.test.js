@@ -184,6 +184,19 @@ describe("measurePageDimensions — standard page", () => {
     assert.equal(typeof dims.width, "number");
     assert.equal(typeof dims.height, "number");
   });
+
+  it("returns dimensions without error when document.body is null", () => {
+    const win = createWindow(`<!DOCTYPE html><html></html>`);
+    // Remove body to simulate frameset or edge-case pages
+    if (win.document.body) {
+      win.document.body.remove();
+    }
+
+    const dims = win.measurePageDimensions();
+
+    assert.equal(typeof dims.width, "number");
+    assert.equal(typeof dims.height, "number");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -25,148 +25,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // Handle messages from popup
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === "capture") {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         captureScreenshot(tabs[0], msg.fullPage);
       }
     });
-  } else if (msg.action === "debug-expand") {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs[0]) return;
-      const tabId = tabs[0].id;
-      const debuggee = { tabId };
-      try {
-        await chrome.debugger.attach(debuggee, "1.3");
-
-        // Get original viewport dimensions (same as captureFullPage)
-        const metrics = await chrome.debugger.sendCommand(
-          debuggee, "Page.getLayoutMetrics"
-        );
-        const viewportWidth = Math.ceil(metrics.cssLayoutViewport.clientWidth);
-        const viewportHeight = Math.ceil(metrics.cssLayoutViewport.clientHeight);
-
-        // Inject lib.js
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
-          expression: await fetch(chrome.runtime.getURL("lib.js")).then(r => r.text()),
-          returnByValue: true
-        });
-
-        // Measure + expand (same as captureFullPage)
-        const { result } = await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
-          expression: `JSON.stringify(measurePageDimensions())`,
-          returnByValue: true
-        });
-        const dims = JSON.parse(result.value);
-
-        // Skip scrollbar hiding in debug mode. Instead, force overflow:auto
-        // on html+body so we get a scrollbar for inspecting the tall content.
-        // (captureFullPage uses overflow:visible + hidden scrollbars, but for
-        // debug we need to be able to scroll.)
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
-          expression: `
-            document.documentElement.style.setProperty('overflow', 'auto', 'important');
-            document.body.style.setProperty('overflow', 'auto', 'important');
-          `,
-          returnByValue: true
-        });
-
-        // Suppress viewport size overlay
-        try {
-          await chrome.debugger.sendCommand(debuggee,
-            "Overlay.setShowViewportSizeOnResize", { show: false }
-          );
-        } catch (_) {}
-
-        // Block resize / ResizeObserver (same as captureFullPage)
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
-          expression: `(() => {
-            window.__screenshotResizeBlocker = (e) => {
-              e.stopImmediatePropagation();
-            };
-            window.addEventListener('resize', window.__screenshotResizeBlocker, true);
-            if (window.ResizeObserver) {
-              window.__screenshotOrigResizeObserver = window.ResizeObserver;
-              window.ResizeObserver = class {
-                constructor() {}
-                observe() {}
-                unobserve() {}
-                disconnect() {}
-              };
-            }
-          })()`,
-          returnByValue: true
-        });
-
-        // setDeviceMetricsOverride — use the ORIGINAL viewport height so
-        // you can still scroll to inspect. The DOM changes are identical
-        // to captureFullPage; only the viewport height differs (capture
-        // uses dims.height). This triggers resize events and re-layout
-        // even at the original size, reproducing the framework interference
-        // that the resize blocker must handle.
-        await chrome.debugger.sendCommand(debuggee,
-          "Emulation.setDeviceMetricsOverride", {
-            width: viewportWidth,
-            height: viewportHeight,
-            deviceScaleFactor: 1,  // Force DPR=1 to match capture path
-            mobile: false
-          }
-        );
-
-        // Keep debugger attached so user can scroll and inspect
-        sendResponse({ dims });
-      } catch (err) {
-        console.error("debug-expand error:", err);
-        try { await chrome.debugger.detach(debuggee); } catch (_) {}
-        sendResponse({ error: err.message });
-      }
-    });
-    return true; // async sendResponse
-  } else if (msg.action === "debug-restore") {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs[0]) return;
-      const tabId = tabs[0].id;
-      const debuggee = { tabId };
-      try {
-        // Clear viewport override
-        await chrome.debugger.sendCommand(debuggee,
-          "Emulation.clearDeviceMetricsOverride"
-        );
-
-        // Restore resize / ResizeObserver
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
-          expression: `(() => {
-            if (window.__screenshotResizeBlocker) {
-              window.removeEventListener('resize', window.__screenshotResizeBlocker, true);
-              delete window.__screenshotResizeBlocker;
-            }
-            if (window.__screenshotOrigResizeObserver) {
-              window.ResizeObserver = window.__screenshotOrigResizeObserver;
-              delete window.__screenshotOrigResizeObserver;
-            }
-          })()`,
-          returnByValue: true
-        });
-
-        // Restore expanded containers + scrollbar style + debug overflow
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
-          expression: `
-            document.documentElement.style.removeProperty('overflow');
-            document.body.style.removeProperty('overflow');
-            restoreExpandedContainers()
-          `,
-          returnByValue: true
-        });
-
-        await chrome.debugger.detach(debuggee);
-      } catch (err) {
-        console.error("debug-restore error:", err);
-        try { await chrome.debugger.detach(debuggee); } catch (_) {}
-      }
-      sendResponse({});
-    });
-    return true; // async sendResponse
   }
 });
 
@@ -201,12 +66,20 @@ async function captureScreenshot(tab, fullPage) {
   }
 }
 
+// Maximum dimensions to prevent Chrome from hanging on extreme pages.
+// Width: 10000px covers ultra-wide monitors. Height: 16000px stays under
+// Chrome's GPU texture limit (16384px) at DPR=1.
+const MAX_CAPTURE_WIDTH = 10000;
+const MAX_CAPTURE_HEIGHT = 16000;
+
 async function captureFullPage(tab) {
   const tabId = tab.id;
   const debuggee = { tabId };
+  let attached = false;
 
   try {
     await chrome.debugger.attach(debuggee, "1.3");
+    attached = true;
 
     // Get the current viewport width
     const metrics = await chrome.debugger.sendCommand(
@@ -237,7 +110,24 @@ async function captureFullPage(tab) {
         returnByValue: true
       }
     );
-    const { width, height } = JSON.parse(dims.value);
+    let { width, height } = JSON.parse(dims.value);
+
+    // Check whether measurePageDimensions found and expanded a nested
+    // scroll container (modal/drawer case). This determines DPR strategy.
+    const { result: expandedResult } = await chrome.debugger.sendCommand(
+      debuggee,
+      "Runtime.evaluate",
+      {
+        expression: `document.querySelectorAll('.__screenshot-expanded__').length`,
+        returnByValue: true
+      }
+    );
+    const hasExpandedContainers = expandedResult.value > 0;
+
+    // Clamp dimensions to safe ranges
+    width = Math.min(Math.max(width, 1), MAX_CAPTURE_WIDTH);
+    height = Math.min(Math.max(height, 1), MAX_CAPTURE_HEIGHT);
+    const captureWidth = Math.min(viewportWidth, MAX_CAPTURE_WIDTH);
 
     // Hide scrollbars so they don't leave a grey strip in the capture
     await chrome.debugger.sendCommand(
@@ -284,97 +174,99 @@ async function captureFullPage(tab) {
           // these instead of (or alongside) the resize event.
           if (window.ResizeObserver) {
             window.__screenshotOrigResizeObserver = window.ResizeObserver;
-            const Orig = window.ResizeObserver;
             window.ResizeObserver = class {
               constructor() {}
               observe() {}
               unobserve() {}
               disconnect() {}
             };
-            // Disconnect existing observers by patching the prototype
-            // temporarily — new observers created during resize will be no-ops.
           }
         })()`,
         returnByValue: true
       }
     );
 
-    // Set viewport to exact content height with DPR=1.
-    // DPR must be forced to 1 to avoid Chrome GPU texture limits (16384px).
-    // At 150% Windows scaling (DPR=1.5), an 11000px page becomes 16500
-    // physical pixels — exceeding the limit and causing Chrome's compositor
-    // to tile/repeat the rendered content.
+    // Set viewport to exact content height.
+    // For complex pages (expanded scroll containers / modals / drawers),
+    // force DPR=1 to avoid Chrome's GPU texture limit (16384px). At 150%
+    // Windows scaling (DPR=1.5), an 11000px page becomes 16500 physical
+    // pixels — exceeding the limit and causing Chrome to tile the content.
+    // For simple pages, keep the browser's native DPR (0) for sharp output.
+    const dpr = hasExpandedContainers ? 1 : 0;
     await chrome.debugger.sendCommand(
       debuggee,
       "Emulation.setDeviceMetricsOverride",
       {
-        width: viewportWidth,
+        width: captureWidth,
         height: height,
-        deviceScaleFactor: 1,
+        deviceScaleFactor: dpr,
         mobile: false
       }
     );
 
-    // Capture with a clip rect matching the exact content dimensions
+    // Capture with a clip rect matching the exact content dimensions.
+    // scale=1 means "capture at the current DPR", not "force 1x".
     const result = await chrome.debugger.sendCommand(
       debuggee,
       "Page.captureScreenshot",
       {
         format: "png",
-        clip: { x: 0, y: 0, width: viewportWidth, height: height, scale: 1 }
+        clip: { x: 0, y: 0, width: captureWidth, height: height, scale: 1 }
       }
     );
 
-    // Clear the emulation override (restores original viewport)
-    await chrome.debugger.sendCommand(
-      debuggee,
-      "Emulation.clearDeviceMetricsOverride"
-    );
-
-    // Restore resize / ResizeObserver handling before restoring containers,
-    // so the framework can respond normally to subsequent layout changes.
-    await chrome.debugger.sendCommand(
-      debuggee,
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
-          if (window.__screenshotResizeBlocker) {
-            window.removeEventListener('resize', window.__screenshotResizeBlocker, true);
-            delete window.__screenshotResizeBlocker;
-          }
-          if (window.__screenshotOrigResizeObserver) {
-            window.ResizeObserver = window.__screenshotOrigResizeObserver;
-            delete window.__screenshotOrigResizeObserver;
-          }
-        })()`,
-        returnByValue: true
-      }
-    );
-
-    // Clean up: remove scrollbar-hiding style and restore expanded containers
-    await chrome.debugger.sendCommand(
-      debuggee,
-      "Runtime.evaluate",
-      {
-        expression: `restoreExpandedContainers()`,
-        returnByValue: true
-      }
-    );
-
-    // Detach immediately — this also restores the viewport.
-    await chrome.debugger.detach(debuggee);
     return result.data;
-  } catch (err) {
-    try { await chrome.debugger.detach(debuggee); } catch (_) {}
-    throw err;
+  } finally {
+    // Guarantee cleanup runs regardless of where a failure occurred.
+    // Each step is wrapped individually so a failure in one doesn't
+    // prevent the others from running.
+    if (attached) {
+      try {
+        await chrome.debugger.sendCommand(
+          debuggee,
+          "Emulation.clearDeviceMetricsOverride"
+        );
+      } catch (_) {}
+
+      try {
+        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: `(() => {
+            if (window.__screenshotResizeBlocker) {
+              window.removeEventListener('resize', window.__screenshotResizeBlocker, true);
+              delete window.__screenshotResizeBlocker;
+            }
+            if (window.__screenshotOrigResizeObserver) {
+              window.ResizeObserver = window.__screenshotOrigResizeObserver;
+              delete window.__screenshotOrigResizeObserver;
+            }
+          })()`,
+          returnByValue: true
+        });
+      } catch (_) {}
+
+      try {
+        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+          expression: `typeof restoreExpandedContainers === 'function' && restoreExpandedContainers()`,
+          returnByValue: true
+        });
+      } catch (_) {}
+
+      try {
+        await chrome.debugger.detach(debuggee);
+      } catch (_) {}
+    }
   }
 }
 
 async function copyToClipboard(tabId, base64Data) {
-  // Focus the window and tab so the page has clipboard access
+  // Focus the window and tab so the page has clipboard access.
+  // Both must complete before injecting the clipboard script,
+  // otherwise "Document is not focused" errors can occur.
   const tab = await chrome.tabs.get(tabId);
-  await chrome.windows.update(tab.windowId, { focused: true });
-  await chrome.tabs.update(tabId, { active: true });
+  await Promise.all([
+    chrome.windows.update(tab.windowId, { focused: true }),
+    chrome.tabs.update(tabId, { active: true })
+  ]);
 
   // Inject a content script that writes the PNG to the clipboard.
   // chrome.scripting.executeScript awaits the returned promise from async funcs.
