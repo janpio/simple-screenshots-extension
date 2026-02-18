@@ -364,6 +364,7 @@ function showPreview(tabId, base64Data) {
         img.src = URL.createObjectURL(blob);
         // Revoke the blob URL once the image has loaded to free memory
         img.addEventListener("load", () => URL.revokeObjectURL(img.src), { once: true });
+        img.addEventListener("error", () => URL.revokeObjectURL(img.src), { once: true });
       } catch (_) {
         // Fallback to data URI if blob creation fails
         img.src = `data:image/png;base64,${b64}`;

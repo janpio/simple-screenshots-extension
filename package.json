@@ -4,9 +4,7 @@
     "test": "node --test test/lib.test.js"
   },
   "devDependencies": {
+    "canvas": "^3.2.1",
     "jsdom": "^26.0.0"
-  },
-  "dependencies": {
-    "canvas": "^3.2.1"
   }
 }
