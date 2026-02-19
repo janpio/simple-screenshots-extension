@@ -68,6 +68,8 @@ Uses Chrome DevTools Protocol (CDP). Wrapped in `try/finally` for guaranteed cle
 12. **Capture** with `Page.captureScreenshot` using a clip rect
 13. **Cleanup (finally block):** clear emulation, restore resize handlers, remove scrollbar style, restore containers, detach debugger — each step individually wrapped so failures don't cascade
 
+Design tradeoff: full-page capture is intentionally **height-first**. The extension prioritizes full vertical coverage and keeps capture width aligned to the current viewport, rather than attempting horizontal overflow stitching.
+
 ## Core Functions in `lib.js`
 
 ### `isRestrictedUrl(url)`

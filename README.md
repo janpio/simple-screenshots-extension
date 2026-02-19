@@ -13,6 +13,7 @@ The extension handles three distinct capture scenarios:
 3. **Full page (complex — modals/drawers)** — for pages with open scrollable overlays (modals, drawers, sidepanels). Detects nested scroll containers, expands them, converts `position: fixed` to `absolute` and `sticky` to `relative`, blocks resize events to prevent framework re-renders, and forces DPR=1 to stay under Chrome's GPU texture limit (16384px).
 
 The extension auto-detects which full-page path to use — no user action required. If a page exceeds the GPU texture limit even at DPR=1, the capture proceeds but a warning banner appears in the preview.
+Full-page mode is intentionally **height-first**: it expands and captures full vertical content, while width stays aligned to the current viewport (it does not attempt horizontal overflow stitching).
 
 ## Features
 
@@ -90,3 +91,4 @@ Tests use Node's built-in `node:test` runner with `jsdom`. Since jsdom doesn't d
 - Full page capture shows a brief "debugging this tab" banner — this is expected
 - The debugger is **not** used for visible-area screenshots
 - Some pages with `100vh` containers may not capture perfectly due to viewport resize causing re-layout
+- Full page capture is designed for full **height**. Extremely wide/horizontally scrolling layouts may be cropped to viewport width
