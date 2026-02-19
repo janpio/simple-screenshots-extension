@@ -333,6 +333,18 @@ describe("captureScreenshot — restricted URL guard", () => {
       text: "✗",
     });
   });
+
+  it("shows error badge when tab is undefined", async () => {
+    const { captureScreenshot, chrome } = createBackgroundContext();
+
+    await captureScreenshot(undefined, false);
+
+    assert.deepEqual(chrome.action.setBadgeText.calls[0][0], {
+      text: "✗",
+    });
+    assert.equal(chrome.tabs.captureVisibleTab.calls.length, 0);
+    assert.equal(chrome.debugger.attach.calls.length, 0);
+  });
 });
 
 describe("captureScreenshot — visible capture", () => {
@@ -796,6 +808,19 @@ describe("showFlashAndPreview", () => {
 
     const [injection] = chrome.scripting.executeScript.calls[0];
     assert.equal(injection.args[1], null);
+  });
+
+  it("removes document keydown listener inside dismiss helper", () => {
+    const { showFlashAndPreview, chrome } = createBackgroundContext();
+
+    showFlashAndPreview(1, "imgData", null);
+
+    const [injection] = chrome.scripting.executeScript.calls[0];
+    const fnSource = injection.func.toString();
+    assert.match(
+      fnSource,
+      /function dismiss\(\)\s*\{[\s\S]*document\.removeEventListener\("keydown", onKey\);/
+    );
   });
 });
 

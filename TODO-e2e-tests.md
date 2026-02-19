@@ -88,7 +88,7 @@ npx playwright install chromium
 Add to `package.json`:
 ```json
 "scripts": {
-  "test": "node --test test/lib.test.js",
+  "test": "node --test test/lib.test.js test/background.test.js",
   "test:e2e": "npx playwright test test/e2e/"
 }
 ```

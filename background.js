@@ -36,9 +36,9 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 async function captureScreenshot(tab, fullPage) {
-  if (!tab.url || isRestrictedUrl(tab.url)) {
+  if (!tab?.url || isRestrictedUrl(tab.url)) {
     showBadge("✗", "#ef4444");
-    console.warn("Cannot capture screenshot on restricted page:", tab.url);
+    console.warn("Cannot capture screenshot on restricted page:", tab?.url);
     return;
   }
 
@@ -521,6 +521,7 @@ function showFlashAndPreview(tabId, base64Data, warning) {
 
           const FADE_TIMEOUT = 4000;
           let timer = null;
+          let dismissed = false;
 
           // --- Panel ---
           const panel = document.createElement("div");
@@ -637,7 +638,10 @@ function showFlashAndPreview(tabId, base64Data, warning) {
 
           // --- Dismiss helpers ---
           function dismiss() {
+            if (dismissed) return;
+            dismissed = true;
             clearTimeout(timer);
+            document.removeEventListener("keydown", onKey);
             backdrop.style.opacity = "0";
             backdrop.addEventListener(
               "transitionend", () => backdrop.remove(), { once: true }
@@ -662,7 +666,6 @@ function showFlashAndPreview(tabId, base64Data, warning) {
           function onKey(e) {
             if (e.key === "Escape") {
               dismiss();
-              document.removeEventListener("keydown", onKey);
             }
           }
           document.addEventListener("keydown", onKey);

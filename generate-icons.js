@@ -8,7 +8,7 @@
  * transparent background. Works on both light and dark browser toolbars.
  *
  * Usage:
- *   npm install          (canvas is already in devDependencies)
+ *   npm install          (canvas is configured as an optional dependency)
  *   node generate-icons.js
  */
 
