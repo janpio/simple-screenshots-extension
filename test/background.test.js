@@ -372,20 +372,6 @@ describe("captureScreenshot — visible capture", () => {
   });
 
   it("shows error badge when captureVisibleTab rejects", async () => {
-    const { chrome } = createBackgroundContext();
-    // Override captureVisibleTab to reject
-    chrome.tabs.captureVisibleTab = async () => {
-      throw new Error("tab not visible");
-    };
-    // Need to re-run background.js with this override — instead, call the
-    // function directly from the already-loaded context
-    const { captureScreenshot } = createBackgroundContext({
-      captureVisibleTabResult: null, // won't matter
-    });
-    // Override after creation
-    captureScreenshot; // not used; we need a different approach
-
-    // Better approach: create context and manually override
     const ctx = createBackgroundContext();
     ctx.chrome.tabs.captureVisibleTab = async () => {
       throw new Error("tab not visible");
