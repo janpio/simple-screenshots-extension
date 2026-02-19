@@ -468,6 +468,33 @@ describe("captureScreenshot — full page capture", () => {
       "Should show success badge after capture"
     );
   });
+
+  it("handles large base64 payload through preview/clipboard path", async () => {
+    const largeBase64 = "A".repeat(1024 * 1024); // 1 MiB deterministic payload
+    const { captureScreenshot, chrome } = createBackgroundContext({
+      captureData: largeBase64,
+    });
+
+    await captureScreenshot(
+      { url: "https://example.com", id: 1, windowId: 1 },
+      true
+    );
+
+    // showFlashAndPreview call has two args: [base64, warning]
+    const previewCall = chrome.scripting.executeScript.calls.find(
+      (c) => c[0].args && c[0].args.length === 2
+    );
+    assert.ok(previewCall, "Preview injection call should exist");
+    assert.equal(previewCall[0].args[0].length, largeBase64.length);
+
+    // Clipboard write and success label update run in a non-awaited .then()
+    await new Promise((r) => setTimeout(r, 0));
+    const texts = badgeTexts(chrome);
+    assert.ok(
+      texts.includes("✓"),
+      "Should complete success path with large payload"
+    );
+  });
 });
 
 describe("captureFullPage — happy path", () => {
@@ -638,6 +665,38 @@ describe("captureFullPage — warnings", () => {
     const result = await captureFullPage({ id: 1 });
 
     assert.equal(result.warning, null);
+  });
+});
+
+describe("captureFullPage — large page stress", () => {
+  it("handles 50k page height with deterministic fallback behavior", async () => {
+    const { captureFullPage, chrome } = createBackgroundContext({
+      pageHeight: 50000,
+      nativeDPR: 2,
+    });
+
+    const result = await captureFullPage({ id: 1 });
+
+    assert.equal(result.data, "fakeBase64Data");
+    assert.ok(result.warning, "Should return a warning for very tall pages");
+    assert.ok(
+      result.warning.includes("repeating/tiled sections"),
+      "Should include tall-page tiling warning text"
+    );
+
+    const emulationCall = cdpCall(chrome, "Emulation.setDeviceMetricsOverride");
+    assert.ok(emulationCall, "Should set emulation metrics");
+    assert.equal(emulationCall[2].height, 50000);
+    assert.equal(emulationCall[2].deviceScaleFactor, 1);
+
+    const screenshotCall = cdpCall(chrome, "Page.captureScreenshot");
+    assert.ok(screenshotCall, "Should capture screenshot");
+    assert.equal(screenshotCall[2].clip.height, 50000);
+
+    assert.ok(
+      chrome.debugger.detach.calls.length > 0,
+      "Should detach debugger after large-page capture"
+    );
   });
 });
 

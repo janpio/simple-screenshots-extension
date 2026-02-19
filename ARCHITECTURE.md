@@ -137,31 +137,32 @@ Tests use jsdom + `node:vm` with dynamic getters to stub CSS layout properties.
 
 | Suite | Tests | What's Tested |
 |-------|-------|---------------|
-| `isRestrictedUrl` | 10 | chrome://, edge://, about:, Web Store, null/undefined |
-| Standard page | 1 | Basic measurement returns numbers |
-| Null body | 1 | Returns documentElement dimensions when body is null |
+| `isRestrictedUrl` | 9 | chrome://, edge://, about:, Web Store, null/undefined |
+| Standard page + null body | 2 | Basic measurement path and no-body edge case |
 | Nested scroll container | 4 | Detection, expansion, ancestor expansion, style preservation |
 | Multiple containers | 1 | Selects largest by scrollHeight |
-| Fixed-position modal | 11 | Modal detection, fixed-to-absolute, sticky neutralization, viewport sizing |
-| `restoreExpandedContainers` | 3 | Style restoration, scrollbar style removal, cleanup |
+| Fixed-position modal | 10 | Modal detection, fixed-to-absolute, sticky neutralization, viewport sizing |
+| `restoreExpandedContainers` | 4 | Style restoration, scrollbar style removal, cleanup |
 | `RESTRICTED_URL_PREFIXES` | 1 | Const export works correctly |
 
-### `test/background.test.js` (38 tests)
+### `test/background.test.js` (44 tests)
 
 Tests use `node:vm` with hand-rolled Chrome API mocks. A `createBackgroundContext()` helper builds the full mock `chrome` namespace, loads `background.js`, and captures registered event listeners.
 
 | Suite | Tests | What's Tested |
 |-------|-------|---------------|
 | Event listener registration | 3 | onInstalled menu items, onClicked wiring, onMessage dispatch |
-| Restricted URL guard | 3 | chrome://, null URL, Web Store — badge + no capture |
+| Restricted URL guard | 4 | chrome://, null URL, undefined tab, Web Store — badge + no capture |
 | Visible capture | 3 | captureVisibleTab args, prefix stripping, error badge |
-| Full page capture | 2 | Debugger path used, success badge |
+| Full page capture | 3 | Debugger path, success badge, large payload path |
 | captureFullPage happy path | 4 | CDP command order, clip dimensions, return value |
 | DPR strategy | 3 | Native DPR, expanded containers, GPU limit fallback |
 | Dimension clamping | 2 | Width capped at 10000, height floored at 1 |
 | Warnings | 3 | Tiling warning, DPR fallback warning, null when OK |
+| Large page stress | 1 | 50k-height path: fallback DPR, warning, clip/emulation params, cleanup |
 | Cleanup on error | 3 | Detach on failure, skip if never attached, cleanup isolation |
 | Overlay suppression | 1 | Capture continues when Overlay domain unavailable |
+| Runtime.evaluate exceptionDetails | 2 | Clear surfaced errors when CDP eval returns exceptionDetails |
 | clipboardWriteViaScript | 3 | Tab targeting, args, error on undefined result |
 | showBadge | 3 | Text/color, 2s clear timeout, pulse animation |
-| UI injection helpers | 4 | showPreFlash, showFlashAndPreview, removeOverlay, showError |
+| UI injection helpers | 6 | showPreFlash, showFlashAndPreview, removeOverlay, showError |
