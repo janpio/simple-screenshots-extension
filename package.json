@@ -1,7 +1,7 @@
 {
   "private": true,
   "scripts": {
-    "test": "node --test test/lib.test.js",
+    "test": "node --test test/*.test.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
