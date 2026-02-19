@@ -8,7 +8,7 @@
  * transparent background. Works on both light and dark browser toolbars.
  *
  * Usage:
- *   npm install sharp   (if not already installed)
+ *   npm install          (canvas is already in devDependencies)
  *   node generate-icons.js
  */
 

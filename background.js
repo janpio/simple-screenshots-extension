@@ -90,6 +90,15 @@ async function captureScreenshot(tab, fullPage) {
     // visibility or focus (user switched away during capture/copy).
     const msg = String(err?.message ?? err ?? "");
     if (
+      msg.includes("Another debugger") ||
+      msg.includes("already attached")
+    ) {
+      showError(
+        tab.id,
+        "Cannot capture while DevTools debugger is attached. " +
+          "Close DevTools and try again."
+      );
+    } else if (
       msg.includes("Unable to capture screenshot") ||
       msg.includes("not focused") ||
       msg.includes("No tab with given id") ||
@@ -486,7 +495,17 @@ function showFlashAndPreview(tabId, base64Data, warning) {
           "animation:__ss-flash__ 0.35s ease-out;";
         document.documentElement.appendChild(backdrop);
 
-        backdrop.addEventListener("animationend", () => buildPreview(), { once: true });
+        let previewBuilt = false;
+        backdrop.addEventListener("animationend", () => safeBuildPreview(), { once: true });
+        // Fallback: if the animation never fires (e.g. prefers-reduced-motion),
+        // build the preview after a short delay to avoid an undismissable overlay.
+        setTimeout(() => safeBuildPreview(), 400);
+
+        function safeBuildPreview() {
+          if (previewBuilt) return;
+          previewBuilt = true;
+          buildPreview();
+        }
 
         function buildPreview() {
           // Switch backdrop to interactive preview mode

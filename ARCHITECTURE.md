@@ -9,11 +9,14 @@ Simple Screenshots is a Chrome extension (Manifest V3) that captures visible-are
 | File | Lines | Role |
 |------|-------|------|
 | `manifest.json` | — | MV3 manifest: permissions, service worker, popup, web-accessible resources |
-| `background.js` | ~431 | Service worker: capture orchestration, CDP interaction, clipboard, preview overlay |
+| `background.js` | ~700 | Service worker: capture orchestration, CDP interaction, clipboard, preview overlay |
 | `lib.js` | ~237 | Pure functions shared across 3 contexts (see below) |
 | `popup.html` | ~53 | Popup UI with capture buttons |
 | `popup.js` | ~19 | Popup logic: button state, message passing |
-| `test/lib.test.js` | ~784 | Unit tests (Node test runner + jsdom) |
+| `test/lib.test.js` | ~784 | Unit tests for lib.js (Node test runner + jsdom) |
+| `test/background.test.js` | ~700 | Unit tests for background.js (Chrome API mocks + VM context) |
+| `eslint.config.js` | ~112 | ESLint 9 flat config with per-file environment overrides |
+| `.github/workflows/ci.yml` | ~18 | GitHub Actions CI (lint + test on Node 18/22) |
 
 ## How `lib.js` Is Loaded (3 Contexts)
 
@@ -56,12 +59,14 @@ Uses Chrome DevTools Protocol (CDP). Wrapped in `try/finally` for guaranteed cle
 3. **Inject `lib.js`** via `Runtime.evaluate`
 4. **Call `measurePageDimensions()`** — detects nested scroll containers and modals, expands them, neutralizes sticky/fixed elements, returns `{ width, height }`
 5. **Detect complexity** — check for `__screenshot-expanded__` elements to determine DPR strategy
-6. **Hide scrollbars** — inject `<style>` with `*::-webkit-scrollbar { display: none }`
-7. **Hide viewport overlay** — suppress Chrome's viewport size indicator
-8. **Block resize events** — suppress `resize` and `ResizeObserver` callbacks to prevent SPA frameworks from re-rendering during viewport resize
-9. **Resize viewport** to full content height via `Emulation.setDeviceMetricsOverride` (DPR=0 for simple pages, DPR=1 for complex expanded-container pages to avoid GPU texture limit)
-10. **Capture** with `Page.captureScreenshot` using a clip rect
-11. **Cleanup (finally block):** clear emulation, restore resize handlers, restore containers, detach debugger — each step individually wrapped so failures don't cascade
+6. **Read native DPR** — `window.devicePixelRatio` to decide if native resolution is safe
+7. **Hide scrollbars** — inject `<style>` with `*::-webkit-scrollbar { display: none }`
+8. **Hide viewport overlay** — suppress Chrome's viewport size indicator
+9. **Block resize events** — suppress `resize` and `ResizeObserver` callbacks to prevent SPA frameworks from re-rendering during viewport resize
+10. **Choose DPR** — native (0) when physical height stays under GPU texture limit (16384px), DPR=1 otherwise. Generate a warning if even DPR=1 exceeds the limit
+11. **Resize viewport** to full content height via `Emulation.setDeviceMetricsOverride`
+12. **Capture** with `Page.captureScreenshot` using a clip rect
+13. **Cleanup (finally block):** clear emulation, restore resize handlers, remove scrollbar style, restore containers, detach debugger — each step individually wrapped so failures don't cascade
 
 ## Core Functions in `lib.js`
 
@@ -102,32 +107,31 @@ Undoes all DOM mutations from `measurePageDimensions()`:
 
 ## Preview Overlay
 
-After capture, a preview is injected into the page:
+After capture, a combined flash + preview is injected in a single `executeScript` call:
 
-- Dark semi-transparent backdrop at `z-index: 2147483647`
-- Right-side panel (460px wide) with scrollable image container
-- Shows "Copied to clipboard ✓" label with image dimensions (width × height px)
-- Image uses a Blob URL (not data: URI) to avoid doubling memory; revoked after load
-- Auto-dismiss after 4 seconds (pauses on hover)
+- **Flash** — white→dark animation (`0.35s ease-out`) signals capture started. A `setTimeout` fallback triggers `buildPreview` if `animationend` never fires (e.g. `prefers-reduced-motion`)
+- **Preview panel** — dark backdrop at `z-index: 2147483647` with a 460px right-side panel containing a scrollable image
+- **Label** — shows a spinner + "Copying to clipboard…" while the clipboard write runs in the background. Updated to "Copied to clipboard ✓" on success or a red error message on failure
+- **Warning banner** — shown when the page exceeded the GPU texture limit (potential tiling artifacts)
+- Image uses a Blob URL (not data: URI) to avoid doubling memory; revoked after load/error
+- Auto-dismiss timer starts only after clipboard success (4 seconds, paused on hover/scroll)
 - Dismiss via: Escape key, click backdrop, or timeout
-- Mouse wheel scrolling on the panel
 
 ## Clipboard Writing
 
-Requires document focus to work:
+Requires document focus — the extension never steals focus:
 
-1. `Promise.all` of `chrome.windows.update({ focused: true })` + `chrome.tabs.update({ active: true })` — both must complete before clipboard access
-2. Inject content script that calls `navigator.clipboard.write()` with a PNG blob
+1. Inject content script via `chrome.scripting.executeScript` that checks `document.hasFocus()` and calls `navigator.clipboard.write()` with a PNG blob
+2. If the document is not focused, the injected script throws and the error surfaces in the preview label
+3. The clipboard write runs concurrently (fire-and-forget `.then()`) — the preview appears immediately while the clipboard operation completes in the background
 
 ## Testing
 
-Unit tests only (E2E planned, see `TODO-e2e-tests.md`). Tests use:
+Unit tests only (E2E planned, see `TODO-e2e-tests.md`). CI runs on Node 18 and 22 via GitHub Actions.
 
-- **Node's built-in `node:test` runner** with jsdom
-- **Dynamic getters** to stub `scrollHeight`/`clientHeight` (jsdom doesn't do CSS layout)
-- **`win.__evaluate(expr)`** helper to access `const` bindings (they don't become `window` properties in a VM context)
+### `test/lib.test.js` (31 tests)
 
-### Test Coverage (31 tests)
+Tests use jsdom + `node:vm` with dynamic getters to stub CSS layout properties.
 
 | Suite | Tests | What's Tested |
 |-------|-------|---------------|
@@ -139,3 +143,23 @@ Unit tests only (E2E planned, see `TODO-e2e-tests.md`). Tests use:
 | Fixed-position modal | 11 | Modal detection, fixed-to-absolute, sticky neutralization, viewport sizing |
 | `restoreExpandedContainers` | 3 | Style restoration, scrollbar style removal, cleanup |
 | `RESTRICTED_URL_PREFIXES` | 1 | Const export works correctly |
+
+### `test/background.test.js` (38 tests)
+
+Tests use `node:vm` with hand-rolled Chrome API mocks. A `createBackgroundContext()` helper builds the full mock `chrome` namespace, loads `background.js`, and captures registered event listeners.
+
+| Suite | Tests | What's Tested |
+|-------|-------|---------------|
+| Event listener registration | 3 | onInstalled menu items, onClicked wiring, onMessage dispatch |
+| Restricted URL guard | 3 | chrome://, null URL, Web Store — badge + no capture |
+| Visible capture | 3 | captureVisibleTab args, prefix stripping, error badge |
+| Full page capture | 2 | Debugger path used, success badge |
+| captureFullPage happy path | 4 | CDP command order, clip dimensions, return value |
+| DPR strategy | 3 | Native DPR, expanded containers, GPU limit fallback |
+| Dimension clamping | 2 | Width capped at 10000, height floored at 1 |
+| Warnings | 3 | Tiling warning, DPR fallback warning, null when OK |
+| Cleanup on error | 3 | Detach on failure, skip if never attached, cleanup isolation |
+| Overlay suppression | 1 | Capture continues when Overlay domain unavailable |
+| clipboardWriteViaScript | 3 | Tab targeting, args, error on undefined result |
+| showBadge | 3 | Text/color, 2s clear timeout, pulse animation |
+| UI injection helpers | 4 | showPreFlash, showFlashAndPreview, removeOverlay, showError |
