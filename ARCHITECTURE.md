@@ -16,7 +16,7 @@ Simple Screenshots is a Chrome extension (Manifest V3) that captures visible-are
 | `test/lib.test.js` | ~784 | Unit tests for lib.js (Node test runner + jsdom) |
 | `test/background.test.js` | ~700 | Unit tests for background.js (Chrome API mocks + VM context) |
 | `eslint.config.js` | ~112 | ESLint 9 flat config with per-file environment overrides |
-| `.github/workflows/ci.yml` | ~18 | GitHub Actions CI (lint + test on Node 18/22) |
+| `.github/workflows/ci.yml` | ~18 | GitHub Actions CI (lint + test on Node 20/22) |
 
 ## How `lib.js` Is Loaded (3 Contexts)
 
@@ -127,7 +127,7 @@ Requires document focus — the extension never steals focus:
 
 ## Testing
 
-Unit tests only (E2E planned, see `TODO-e2e-tests.md`). CI runs on Node 18 and 22 via GitHub Actions.
+Unit tests only (E2E planned, see `TODO-e2e-tests.md`). CI runs on Node 20 and 22 via GitHub Actions.
 
 ### `test/lib.test.js` (31 tests)
 

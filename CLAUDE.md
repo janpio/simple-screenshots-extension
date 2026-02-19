@@ -1,14 +1,17 @@
 # CLAUDE.md
 
-See README.md for project overview, architecture, and file structure.
+See ARCHITECTURE.md for detailed design, capture flows, and test inventory.
 
 ## Commands
 
 ```sh
 npm test       # run unit tests (Node.js test runner + jsdom)
+npm run lint   # ESLint 9 flat config — per-file env overrides for browser/extension/node
 ```
 
 No build step. Reload the extension at `chrome://extensions` after changes.
+
+Requires **Node ≥ 20** (set in `engines`). CI runs on Node 20 and 22.
 
 ## Gotchas
 
@@ -20,4 +23,5 @@ No build step. Reload the extension at `chrome://extensions` after changes.
 - **Full page screenshots on pages with `100vh` / viewport-relative sizing** can break because `setDeviceMetricsOverride` triggers a re-layout. This is a known limitation.
 - **Nested scroll containers** (SPAs with `overflow:hidden` on body) are detected by scanning all elements for `scrollHeight > clientHeight + 10` with `overflowY: auto|scroll|overlay`. The largest one is expanded along with its clipping ancestors.
 - **Resize events are blocked** during full-page capture to prevent SPA frameworks from re-rendering and undoing `measurePageDimensions()` DOM changes. Both `resize` events and `ResizeObserver` callbacks are suppressed, then restored in the `finally` block.
-- **Conditional DPR strategy:** `deviceScaleFactor: 0` (native) for simple pages, `deviceScaleFactor: 1` for pages with expanded scroll containers. The `__screenshot-expanded__` class presence determines which path. This avoids Chrome's GPU texture limit (16384px) on complex pages while keeping sharp output on simple ones.
+- **Conditional DPR strategy:** `deviceScaleFactor: 0` (native) when physical pixel height (`height × nativeDPR`) stays under `GPU_TEXTURE_LIMIT` (16384px); falls back to `deviceScaleFactor: 1` otherwise. On pages with expanded scroll containers (`__screenshot-expanded__` class present), DPR 1 is always used. A tiling warning is shown if even DPR 1 exceeds the limit.
+- **`createBackgroundContext(options)`** in `test/background.test.js` builds a full Chrome API mock namespace and loads `background.js` in a `node:vm` sandbox. Options control page height, DPR, expanded containers, sendCommand errors, etc. Tests use `require("node:assert")` (non-strict) because `deepStrictEqual` breaks across VM context boundaries.
