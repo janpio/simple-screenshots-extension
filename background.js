@@ -120,6 +120,38 @@ const MAX_CAPTURE_WIDTH = 10000;
 // threshold cause tiling/repeating artifacts in the captured image.
 const GPU_TEXTURE_LIMIT = 16384;
 
+function describeRuntimeEvaluateException(details) {
+  if (!details) return "Unknown Runtime.evaluate error";
+  const text =
+    details.exception?.description ||
+    details.exception?.value ||
+    details.text ||
+    "Unknown Runtime.evaluate error";
+  const hasLine = Number.isFinite(details.lineNumber);
+  const hasCol = Number.isFinite(details.columnNumber);
+  if (!hasLine && !hasCol) return String(text);
+  const line = hasLine ? details.lineNumber + 1 : "?";
+  const col = hasCol ? details.columnNumber + 1 : "?";
+  return `${text} (line ${line}, col ${col})`;
+}
+
+async function evaluateInPage(debuggee, expression, operation) {
+  const response = await chrome.debugger.sendCommand(
+    debuggee,
+    "Runtime.evaluate",
+    {
+      expression,
+      returnByValue: true
+    }
+  );
+  if (response?.exceptionDetails) {
+    throw new Error(
+      `${operation} failed: ${describeRuntimeEvaluateException(response.exceptionDetails)}`
+    );
+  }
+  return response?.result;
+}
+
 async function captureFullPage(tab) {
   const tabId = tab.id;
   const debuggee = { tabId };
@@ -137,70 +169,65 @@ async function captureFullPage(tab) {
     const viewportWidth = Math.ceil(metrics.cssLayoutViewport.clientWidth);
 
     // Inject lib.js into the page so measurePageDimensions is available
-    await chrome.debugger.sendCommand(
+    await evaluateInPage(
       debuggee,
-      "Runtime.evaluate",
-      {
-        expression: await fetch(chrome.runtime.getURL("lib.js")).then((r) =>
-          r.text()
-        ),
-        returnByValue: true
-      }
+      await fetch(chrome.runtime.getURL("lib.js")).then((r) => r.text()),
+      "Injecting lib.js into target page"
     );
 
     // Measure the true scrollable content height.
     // This also detects and expands nested scroll containers (SPAs, etc.).
-    const { result: dims } = await chrome.debugger.sendCommand(
+    const dims = await evaluateInPage(
       debuggee,
-      "Runtime.evaluate",
-      {
-        expression: `JSON.stringify(measurePageDimensions())`,
-        returnByValue: true
-      }
+      `JSON.stringify(measurePageDimensions())`,
+      "Measuring page dimensions"
     );
-    let { height } = JSON.parse(dims.value);
+    let parsedDims;
+    try {
+      parsedDims = JSON.parse(dims?.value ?? "");
+    } catch (_) {
+      throw new Error("Measuring page dimensions failed: invalid JSON result");
+    }
+    let { height } = parsedDims;
+    if (!Number.isFinite(height)) {
+      throw new Error("Measuring page dimensions failed: invalid height value");
+    }
 
     // Check whether measurePageDimensions found and expanded a nested
     // scroll container (modal/drawer case). This determines DPR strategy.
-    const { result: expandedResult } = await chrome.debugger.sendCommand(
+    const expandedResult = await evaluateInPage(
       debuggee,
-      "Runtime.evaluate",
-      {
-        expression: `document.querySelectorAll('.__screenshot-expanded__').length`,
-        returnByValue: true
-      }
+      `document.querySelectorAll('.__screenshot-expanded__').length`,
+      "Detecting expanded containers"
     );
-    const hasExpandedContainers = expandedResult.value > 0;
+    const hasExpandedContainers = Number(expandedResult?.value) > 0;
 
     // Get the native device pixel ratio so we can decide whether it's
     // safe to capture at native resolution.
-    const { result: dprResult } = await chrome.debugger.sendCommand(
+    const dprResult = await evaluateInPage(
       debuggee,
-      "Runtime.evaluate",
-      {
-        expression: `window.devicePixelRatio || 1`,
-        returnByValue: true
-      }
+      `window.devicePixelRatio || 1`,
+      "Reading devicePixelRatio"
     );
-    const nativeDPR = dprResult.value;
+    const nativeDPR =
+      Number.isFinite(dprResult?.value) && dprResult.value > 0
+        ? dprResult.value
+        : 1;
 
     // Ensure height is at least 1
     height = Math.max(height, 1);
     const captureWidth = Math.min(viewportWidth, MAX_CAPTURE_WIDTH);
 
     // Hide scrollbars so they don't leave a grey strip in the capture
-    await chrome.debugger.sendCommand(
+    await evaluateInPage(
       debuggee,
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
+      `(() => {
           const s = document.createElement('style');
           s.id = '__screenshot-hide-scrollbars__';
           s.textContent = '*::-webkit-scrollbar { display: none !important } * { scrollbar-width: none !important }';
           document.documentElement.appendChild(s);
         })()`,
-        returnByValue: true
-      }
+      "Hiding scrollbars"
     );
 
     // Suppress the "viewport size" overlay Chrome shows during emulation.
@@ -219,11 +246,9 @@ async function captureFullPage(tab) {
     // SPA frameworks (React, etc.) listen for resize events and may restore
     // position:fixed, overflow:hidden, and position:sticky — undoing the
     // expansion and repositioning done by measurePageDimensions().
-    await chrome.debugger.sendCommand(
+    await evaluateInPage(
       debuggee,
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
+      `(() => {
           window.__screenshotResizeBlocker = (e) => {
             e.stopImmediatePropagation();
           };
@@ -241,8 +266,7 @@ async function captureFullPage(tab) {
             };
           }
         })()`,
-        returnByValue: true
-      }
+      "Installing resize blocker"
     );
 
     // Decide DPR strategy based on whether the physical pixel height

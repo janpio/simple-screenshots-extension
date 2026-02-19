@@ -23,6 +23,8 @@ const backgroundSource = fs.readFileSync(
  *   nativeDPR - value returned for window.devicePixelRatio
  *   captureData - base64 string returned by Page.captureScreenshot
  *   sendCommandErrors - map of CDP method name → Error to throw
+ *   runtimeEvaluateExceptions - array of { match, details } entries that make
+ *     Runtime.evaluate return { exceptionDetails } when expression includes match
  *   captureVisibleTabResult - data URL returned by tabs.captureVisibleTab
  *   executeScriptResult - return value of scripting.executeScript
  */
@@ -35,6 +37,7 @@ function createBackgroundContext(options = {}) {
     nativeDPR = 1,
     captureData = "fakeBase64Data",
     sendCommandErrors = {},
+    runtimeEvaluateExceptions = [],
     captureVisibleTabResult = "data:image/png;base64,visibleBase64",
     executeScriptResult = [{ result: { ok: true } }],
   } = options;
@@ -99,6 +102,16 @@ function createBackgroundContext(options = {}) {
               };
             case "Runtime.evaluate": {
               const expr = params?.expression || "";
+              for (const ex of runtimeEvaluateExceptions) {
+                if (expr.includes(ex.match)) {
+                  return {
+                    exceptionDetails:
+                      typeof ex.details === "string"
+                        ? { text: ex.details }
+                        : ex.details,
+                  };
+                }
+              }
               if (expr.includes("measurePageDimensions")) {
                 return {
                   result: {
@@ -707,6 +720,52 @@ describe("captureFullPage — Overlay suppression", () => {
     const result = await captureFullPage({ id: 1 });
 
     assert.equal(result.data, "fakeBase64Data");
+  });
+});
+
+describe("captureFullPage — Runtime.evaluate exceptionDetails", () => {
+  it("throws clear error when lib.js injection evaluate reports exceptionDetails", async () => {
+    const { captureFullPage, chrome } = createBackgroundContext({
+      runtimeEvaluateExceptions: [
+        {
+          match: "lib.js source",
+          details: {
+            text: "SyntaxError: Unexpected token",
+            lineNumber: 0,
+            columnNumber: 9,
+          },
+        },
+      ],
+    });
+
+    await assert.rejects(
+      () => captureFullPage({ id: 1 }),
+      /Injecting lib\.js into target page failed: SyntaxError: Unexpected token \(line 1, col 10\)/
+    );
+    assert.ok(
+      chrome.debugger.detach.calls.length > 0,
+      "Should detach debugger when Runtime.evaluate returns exceptionDetails"
+    );
+  });
+
+  it("throws clear error when measurePageDimensions evaluate reports exceptionDetails", async () => {
+    const { captureFullPage, chrome } = createBackgroundContext({
+      runtimeEvaluateExceptions: [
+        {
+          match: "measurePageDimensions",
+          details: "ReferenceError: measurePageDimensions is not defined",
+        },
+      ],
+    });
+
+    await assert.rejects(
+      () => captureFullPage({ id: 1 }),
+      /Measuring page dimensions failed: ReferenceError: measurePageDimensions is not defined/
+    );
+    assert.ok(
+      chrome.debugger.detach.calls.length > 0,
+      "Should detach debugger when measurePageDimensions evaluate fails"
+    );
   });
 });
 
