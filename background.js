@@ -24,12 +24,28 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-// Handle messages from popup
-chrome.runtime.onMessage.addListener((msg) => {
+// Handle messages from popup/content scripts
+chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === "capture") {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         captureScreenshot(tabs[0], msg.fullPage);
+      }
+    });
+    return;
+  }
+
+  if (msg.action === "retryClipboard") {
+    const tabId = sender?.tab?.id;
+    if (Number.isInteger(tabId)) {
+      retryClipboardFromPreview(tabId);
+      return;
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTabId = tabs?.[0]?.id;
+      if (Number.isInteger(activeTabId)) {
+        retryClipboardFromPreview(activeTabId);
       }
     });
   }
@@ -121,7 +137,7 @@ async function captureScreenshot(tab, fullPage) {
           "Copied to clipboard \u2713",
           "#4ade80",
           true,
-          captureId
+          { captureId }
         );
         finishCaptureIfCurrent(tabId, captureId);
       },
@@ -135,7 +151,12 @@ async function captureScreenshot(tab, fullPage) {
           "Clipboard failed — click tab and retry",
           "#f87171",
           false,
-          captureId
+          {
+            captureId,
+            retryVisible: true,
+            retryEnabled: true,
+            retryText: "Retry copy"
+          }
         );
         finishCaptureIfCurrent(tabId, captureId);
       }
@@ -471,6 +492,49 @@ async function copyToClipboard(tabId, base64Data, captureId = null) {
   return { ok: true, stale: false };
 }
 
+async function retryClipboardFromPreview(tabId) {
+  showBadge("...", "#6b7280");
+  updatePreviewLabel(
+    tabId,
+    "Retrying clipboard\u2026",
+    "#9ca3af",
+    false,
+    {
+      retryVisible: true,
+      retryEnabled: false,
+      retryText: "Retrying\u2026"
+    }
+  );
+
+  try {
+    await clipboardWriteFromPreviewViaScript(tabId);
+    showBadge("✓", "#22c55e");
+    updatePreviewLabel(
+      tabId,
+      "Copied to clipboard \u2713",
+      "#4ade80",
+      true,
+      {
+        retryVisible: false
+      }
+    );
+  } catch (clipErr) {
+    console.error("Clipboard retry error:", clipErr);
+    showBadge("✗", "#ef4444");
+    updatePreviewLabel(
+      tabId,
+      "Clipboard failed — retry used, take a new screenshot",
+      "#f87171",
+      false,
+      {
+        retryVisible: true,
+        retryEnabled: false,
+        retryText: "Retry used"
+      }
+    );
+  }
+}
+
 async function clearCaptureOverlays(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },
@@ -534,6 +598,37 @@ async function clipboardWriteViaScript(tabId, base64Data, captureId = null) {
   }
 
   return { ok: true, stale: false };
+}
+
+// Retry clipboard write using base64 cached on the preview overlay.
+async function clipboardWriteFromPreviewViaScript(tabId) {
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async () => {
+      const preview = document.getElementById("__screenshot-preview__");
+      if (!preview) {
+        throw new Error("Preview is not available");
+      }
+      const base64Data = preview.__screenshotBase64;
+      if (typeof base64Data !== "string" || base64Data.length === 0) {
+        throw new Error("Preview image data is unavailable");
+      }
+      if (!document.hasFocus()) {
+        throw new Error("Document is not focused");
+      }
+
+      const res = await fetch(`data:image/png;base64,${base64Data}`);
+      const blob = await res.blob();
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": blob })
+      ]);
+      return { ok: true };
+    }
+  });
+
+  if (!result?.result?.ok) {
+    throw new Error("Clipboard write did not complete successfully");
+  }
 }
 
 // Remove a named overlay element from the page (cleanup helper).
@@ -649,7 +744,7 @@ function showPreFlash(tabId) {
 function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
   return chrome.scripting.executeScript({
     target: { tabId },
-    func: (b64, warn, id) => {
+    func: (b64, warn, id, retryTabId) => {
       return new Promise((resolve) => {
         // Remove leftovers
         document.getElementById("__screenshot-preflash__")?.remove();
@@ -673,6 +768,8 @@ function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
         const backdrop = document.createElement("div");
         backdrop.id = "__screenshot-preview__";
         backdrop.dataset.captureId = id === null ? "" : String(id);
+        backdrop.__screenshotBase64 = b64;
+        backdrop.__retryUsed = false;
         backdrop.style.cssText =
           "position:fixed;inset:0;z-index:2147483647;pointer-events:none;" +
           "background:rgba(0,0,0,0.5);" +
@@ -761,8 +858,41 @@ function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
             "color: #9ca3af; font-size: 11px; font-weight: 400;";
           labelDims.textContent = "loading\u2026";
 
+          const retryButton = document.createElement("button");
+          retryButton.id = "__screenshot-preview-retry__";
+          retryButton.type = "button";
+          retryButton.hidden = true;
+          retryButton.disabled = true;
+          retryButton.textContent = "Retry copy";
+          retryButton.style.cssText =
+            "height:22px;padding:0 8px;border-radius:6px;" +
+            "border:1px solid rgba(248,113,113,0.55);" +
+            "background:rgba(248,113,113,0.14);color:#fca5a5;" +
+            "font-size:11px;font-weight:600;cursor:pointer;";
+          retryButton.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (retryButton.hidden || retryButton.disabled) return;
+            if (backdrop.__retryUsed) return;
+            backdrop.__retryUsed = true;
+            retryButton.disabled = true;
+            retryButton.textContent = "Retrying\u2026";
+            chrome.runtime.sendMessage({
+              action: "retryClipboard",
+              tabId: retryTabId
+            }).catch(() => {
+              retryButton.disabled = true;
+              retryButton.textContent = "Retry used";
+            });
+          });
+
+          const labelRight = document.createElement("span");
+          labelRight.style.cssText = "display:flex;align-items:center;gap:8px;";
+          labelRight.appendChild(labelDims);
+          labelRight.appendChild(retryButton);
+
           label.appendChild(labelLeft);
-          label.appendChild(labelDims);
+          label.appendChild(labelRight);
 
           // --- Scrollable image container ---
           const imgWrap = document.createElement("div");
@@ -841,9 +971,13 @@ function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
           for (const evt of [
             "click", "mousedown", "mouseup", "pointerdown", "pointerup"
           ]) {
-            backdrop.addEventListener(evt, (e) => {
+            panel.addEventListener(evt, (e) => {
               e.stopPropagation();
-              if (evt === "click" && e.target === backdrop) dismiss();
+            });
+            backdrop.addEventListener(evt, (e) => {
+              if (e.target !== backdrop) return;
+              e.stopPropagation();
+              if (evt === "click") dismiss();
             }, true);
           }
 
@@ -877,7 +1011,7 @@ function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
         }
       });
     },
-    args: [base64Data, warning ?? null, captureId]
+    args: [base64Data, warning ?? null, captureId, tabId]
   }).catch(() => {}); // ignore errors on restricted pages
 }
 
@@ -888,13 +1022,34 @@ function updatePreviewLabel(
   text,
   color,
   startTimer = false,
-  captureId = null
+  options = {}
 ) {
+  const {
+    captureId = null,
+    retryVisible,
+    retryEnabled,
+    retryText
+  } = options || {};
+  const scriptOptions = {};
+  if (captureId !== null && captureId !== undefined) {
+    scriptOptions.captureId = captureId;
+  }
+  if (typeof retryVisible === "boolean") {
+    scriptOptions.retryVisible = retryVisible;
+  }
+  if (typeof retryEnabled === "boolean") {
+    scriptOptions.retryEnabled = retryEnabled;
+  }
+  if (typeof retryText === "string") {
+    scriptOptions.retryText = retryText;
+  }
+
   chrome.scripting.executeScript({
     target: { tabId },
-    func: (txt, col, start, expectedCaptureId) => {
+    func: (txt, col, start, opts) => {
       const backdrop = document.getElementById("__screenshot-preview__");
-      if (expectedCaptureId !== null && expectedCaptureId !== undefined) {
+      const expectedCaptureId = opts?.captureId;
+      if (expectedCaptureId !== undefined) {
         if (
           !backdrop ||
           backdrop.dataset.captureId !== String(expectedCaptureId)
@@ -908,12 +1063,28 @@ function updatePreviewLabel(
         el.textContent = txt;
         el.style.color = col;
       }
+
+      const retryButton = document.getElementById("__screenshot-preview-retry__");
+      if (retryButton) {
+        if (opts?.retryVisible === true) {
+          retryButton.hidden = false;
+        } else if (opts?.retryVisible === false) {
+          retryButton.hidden = true;
+        }
+        if (typeof opts?.retryEnabled === "boolean") {
+          retryButton.disabled = !opts.retryEnabled;
+        }
+        if (typeof opts?.retryText === "string") {
+          retryButton.textContent = opts.retryText;
+        }
+      }
+
       // Remove spinner — clipboard operation is done
       document.getElementById("__screenshot-preview-spinner__")?.remove();
       if (start) {
         if (backdrop?.__startDismissTimer) backdrop.__startDismissTimer();
       }
     },
-    args: [text, color, startTimer, captureId]
+    args: [text, color, startTimer, scriptOptions]
   }).catch(() => {});
 }

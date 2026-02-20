@@ -91,9 +91,27 @@ async function triggerViaRuntimeMessage(options) {
   // the active tab when handling runtime messages from popup.
   await page.bringToFront();
 
-  await sender.evaluate(({ fullPage }) => {
-    return chrome.runtime.sendMessage({ action: "capture", fullPage });
-  }, { fullPage: mode === "full" });
+  const tabUrl = page.url();
+  const targetTabId = await sender.evaluate(async ({ url }) => {
+    try {
+      const byUrl = await chrome.tabs.query({ url });
+      if (byUrl[0]?.id) return byUrl[0].id;
+    } catch (_) {}
+
+    try {
+      const active = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      if (active[0]?.id) return active[0].id;
+    } catch (_) {}
+
+    return null;
+  }, { url: tabUrl });
+
+  await sender.evaluate(({ fullPage, tabId }) => {
+    return chrome.runtime.sendMessage({ action: "capture", fullPage, tabId });
+  }, { fullPage: mode === "full", tabId: targetTabId });
 
   return { triggerUsed: "runtime-message" };
 }

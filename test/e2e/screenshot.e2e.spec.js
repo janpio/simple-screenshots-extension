@@ -594,21 +594,282 @@ test("focus-loss clipboard failure path surfaces expected error label", async ()
     const labelText = await page.evaluate(() =>
       document.getElementById("__screenshot-preview-label__")?.textContent || ""
     );
+    const retryButton = await page.evaluate(() => {
+      const el = document.getElementById("__screenshot-preview-retry__");
+      return {
+        exists: Boolean(el),
+        hidden: el ? el.hidden : true,
+        disabled: el ? el.disabled : true,
+        text: el?.textContent || "",
+      };
+    });
 
     logRun("clipboard-focus-failure", {
       trigger: trigger.triggerUsed,
       fallbackReason: trigger.fallbackReason || null,
       badgeTimeline: badge.timeline,
       labelText,
+      retryButton,
     });
 
     expect(labelText).toContain("Clipboard failed");
+    expect(retryButton.exists).toBe(true);
+    expect(retryButton.hidden).toBe(false);
+    expect(retryButton.disabled).toBe(false);
+    expect(retryButton.text).toContain("Retry copy");
   } finally {
     await serviceWorker.evaluate(() => {
       if (globalThis.__origClipboardWriteViaScript) {
         clipboardWriteViaScript = globalThis.__origClipboardWriteViaScript;
         delete globalThis.__origClipboardWriteViaScript;
       }
+    });
+  }
+});
+
+test("retry button copies successfully after initial clipboard focus failure", async () => {
+  const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
+  const serviceWorker = await activeServiceWorker();
+  await clearBadge(serviceWorker);
+
+  await serviceWorker.evaluate(() => {
+    globalThis.__origClipboardWriteViaScript = clipboardWriteViaScript;
+    globalThis.__initialClipboardFailuresRemaining = 1;
+    clipboardWriteViaScript = async (...args) => {
+      if (globalThis.__initialClipboardFailuresRemaining > 0) {
+        globalThis.__initialClipboardFailuresRemaining -= 1;
+        throw new Error("Document is not focused");
+      }
+      return globalThis.__origClipboardWriteViaScript(...args);
+    };
+
+    globalThis.__origCaptureVisibleTab = chrome.tabs.captureVisibleTab;
+    globalThis.__captureVisibleTabCalls = 0;
+    chrome.tabs.captureVisibleTab = async (...args) => {
+      globalThis.__captureVisibleTabCalls += 1;
+      return globalThis.__origCaptureVisibleTab(...args);
+    };
+  });
+
+  try {
+    const trigger = await triggerCapture({
+      mode: "visible",
+      strategy: "runtime-message",
+      page,
+      context: harness.context,
+      serviceWorker,
+      extensionId: harness.extensionId,
+    });
+
+    const initialBadge = await waitForBadge({
+      serviceWorker,
+      expectedText: "✗",
+      timeoutMs: 15000,
+      requireSeen: "...",
+    });
+
+    await page.waitForFunction(
+      () => {
+        const button = document.getElementById("__screenshot-preview-retry__");
+        return button && !button.hidden && !button.disabled;
+      },
+      null,
+      { timeout: 10000 }
+    );
+
+    const captureCallsBeforeRetry = await serviceWorker.evaluate(
+      () => globalThis.__captureVisibleTabCalls
+    );
+    expect(captureCallsBeforeRetry).toBe(1);
+
+    await clearBadge(serviceWorker);
+    await page.evaluate(() => {
+      document.getElementById("__screenshot-preview-retry__")?.click();
+    });
+
+    const retryBadge = await waitForBadge({
+      serviceWorker,
+      expectedText: "✓",
+      timeoutMs: 15000,
+    });
+
+    await page.waitForFunction(
+      () => {
+        const label = document.getElementById("__screenshot-preview-label__");
+        return label && label.textContent.includes("Copied to clipboard");
+      },
+      null,
+      { timeout: 10000 }
+    );
+
+    const retryUiState = await page.evaluate(() => {
+      const label = document.getElementById("__screenshot-preview-label__");
+      const button = document.getElementById("__screenshot-preview-retry__");
+      return {
+        labelText: label?.textContent || "",
+        retryHidden: button ? button.hidden : true,
+      };
+    });
+
+    const captureCallsAfterRetry = await serviceWorker.evaluate(
+      () => globalThis.__captureVisibleTabCalls
+    );
+    const metrics = await readClipboardPngMetrics(page);
+
+    logRun("clipboard-retry-success", {
+      trigger: trigger.triggerUsed,
+      fallbackReason: trigger.fallbackReason || null,
+      initialBadgeTimeline: initialBadge.timeline,
+      retryBadgeTimeline: retryBadge.timeline,
+      captureCallsBeforeRetry,
+      captureCallsAfterRetry,
+      retryUiState,
+      image: { width: metrics.width, height: metrics.height, pngBytes: metrics.pngBytes },
+    });
+
+    expect(retryUiState.labelText).toContain("Copied to clipboard");
+    expect(retryUiState.retryHidden).toBe(true);
+    expect(captureCallsAfterRetry).toBe(captureCallsBeforeRetry);
+    expect(metrics.pngBytes).toBeGreaterThan(5000);
+  } finally {
+    await serviceWorker.evaluate(() => {
+      if (globalThis.__origClipboardWriteViaScript) {
+        clipboardWriteViaScript = globalThis.__origClipboardWriteViaScript;
+        delete globalThis.__origClipboardWriteViaScript;
+      }
+      delete globalThis.__initialClipboardFailuresRemaining;
+
+      if (globalThis.__origCaptureVisibleTab) {
+        chrome.tabs.captureVisibleTab = globalThis.__origCaptureVisibleTab;
+        delete globalThis.__origCaptureVisibleTab;
+      }
+      delete globalThis.__captureVisibleTabCalls;
+    });
+  }
+});
+
+test("retry button disables after retry failure and does not recapture", async () => {
+  const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
+  const serviceWorker = await activeServiceWorker();
+  await clearBadge(serviceWorker);
+
+  await serviceWorker.evaluate(() => {
+    globalThis.__origClipboardWriteViaScript = clipboardWriteViaScript;
+    globalThis.__origClipboardWriteFromPreviewViaScript =
+      globalThis.clipboardWriteFromPreviewViaScript;
+    clipboardWriteViaScript = async () => {
+      throw new Error("Document is not focused");
+    };
+    globalThis.clipboardWriteFromPreviewViaScript = async () => {
+      throw new Error("Document is not focused");
+    };
+
+    globalThis.__origCaptureVisibleTab = chrome.tabs.captureVisibleTab;
+    globalThis.__captureVisibleTabCalls = 0;
+    chrome.tabs.captureVisibleTab = async (...args) => {
+      globalThis.__captureVisibleTabCalls += 1;
+      return globalThis.__origCaptureVisibleTab(...args);
+    };
+  });
+
+  try {
+    const trigger = await triggerCapture({
+      mode: "visible",
+      strategy: "runtime-message",
+      page,
+      context: harness.context,
+      serviceWorker,
+      extensionId: harness.extensionId,
+    });
+
+    const initialBadge = await waitForBadge({
+      serviceWorker,
+      expectedText: "✗",
+      timeoutMs: 15000,
+      requireSeen: "...",
+    });
+
+    await page.waitForFunction(
+      () => {
+        const button = document.getElementById("__screenshot-preview-retry__");
+        return button && !button.hidden && !button.disabled;
+      },
+      null,
+      { timeout: 10000 }
+    );
+
+    const captureCallsBeforeRetry = await serviceWorker.evaluate(
+      () => globalThis.__captureVisibleTabCalls
+    );
+    expect(captureCallsBeforeRetry).toBe(1);
+
+    await clearBadge(serviceWorker);
+    await page.evaluate(() => {
+      document.getElementById("__screenshot-preview-retry__")?.click();
+    });
+
+    const retryBadge = await waitForBadge({
+      serviceWorker,
+      expectedText: "✗",
+      timeoutMs: 15000,
+    });
+
+    await page.waitForFunction(
+      () => {
+        const label = document.getElementById("__screenshot-preview-label__");
+        return label && label.textContent.includes("retry used");
+      },
+      null,
+      { timeout: 10000 }
+    );
+
+    const retryUiState = await page.evaluate(() => {
+      const label = document.getElementById("__screenshot-preview-label__");
+      const button = document.getElementById("__screenshot-preview-retry__");
+      return {
+        labelText: label?.textContent || "",
+        retryHidden: button ? button.hidden : true,
+        retryDisabled: button ? button.disabled : true,
+        retryText: button?.textContent || "",
+      };
+    });
+
+    const captureCallsAfterRetry = await serviceWorker.evaluate(
+      () => globalThis.__captureVisibleTabCalls
+    );
+
+    logRun("clipboard-retry-failure", {
+      trigger: trigger.triggerUsed,
+      fallbackReason: trigger.fallbackReason || null,
+      initialBadgeTimeline: initialBadge.timeline,
+      retryBadgeTimeline: retryBadge.timeline,
+      captureCallsBeforeRetry,
+      captureCallsAfterRetry,
+      retryUiState,
+    });
+
+    expect(retryUiState.labelText).toContain("retry used");
+    expect(retryUiState.retryHidden).toBe(false);
+    expect(retryUiState.retryDisabled).toBe(true);
+    expect(retryUiState.retryText).toContain("Retry used");
+    expect(captureCallsAfterRetry).toBe(captureCallsBeforeRetry);
+  } finally {
+    await serviceWorker.evaluate(() => {
+      if (globalThis.__origClipboardWriteViaScript) {
+        clipboardWriteViaScript = globalThis.__origClipboardWriteViaScript;
+        delete globalThis.__origClipboardWriteViaScript;
+      }
+      if (globalThis.__origClipboardWriteFromPreviewViaScript) {
+        globalThis.clipboardWriteFromPreviewViaScript =
+          globalThis.__origClipboardWriteFromPreviewViaScript;
+        delete globalThis.__origClipboardWriteFromPreviewViaScript;
+      }
+
+      if (globalThis.__origCaptureVisibleTab) {
+        chrome.tabs.captureVisibleTab = globalThis.__origCaptureVisibleTab;
+        delete globalThis.__origCaptureVisibleTab;
+      }
+      delete globalThis.__captureVisibleTabCalls;
     });
   }
 });

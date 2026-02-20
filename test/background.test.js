@@ -238,6 +238,8 @@ function createBackgroundContext(options = {}) {
     captureFullPage: context.captureFullPage,
     copyToClipboard: context.copyToClipboard,
     clipboardWriteViaScript: context.clipboardWriteViaScript,
+    clipboardWriteFromPreviewViaScript: context.clipboardWriteFromPreviewViaScript,
+    retryClipboardFromPreview: context.retryClipboardFromPreview,
     showBadge: context.showBadge,
     showPreFlash: context.showPreFlash,
     showFlashAndPreview: context.showFlashAndPreview,
@@ -333,6 +335,35 @@ describe("event listener registration", () => {
     const [queryInfo] = chrome.tabs.query.calls[0];
     assert.deepEqual(queryInfo, { active: true, currentWindow: true });
   });
+
+  it("onMessage dispatches retryClipboard using sender tab id", () => {
+    const { chrome, context, listeners } = createBackgroundContext();
+    const calls = [];
+    context.retryClipboardFromPreview = async (tabId) => {
+      calls.push(tabId);
+    };
+
+    listeners.onMessageCb(
+      { action: "retryClipboard" },
+      { tab: { id: 77 } }
+    );
+
+    assert.equal(chrome.tabs.query.calls.length, 0);
+    assert.deepEqual(calls, [77]);
+  });
+
+  it("onMessage falls back to active tab when sender tab is unavailable", () => {
+    const { chrome, context, listeners } = createBackgroundContext();
+    const calls = [];
+    context.retryClipboardFromPreview = async (tabId) => {
+      calls.push(tabId);
+    };
+
+    listeners.onMessageCb({ action: "retryClipboard" }, {});
+
+    assert.equal(chrome.tabs.query.calls.length, 1);
+    assert.deepEqual(calls, [1]);
+  });
 });
 
 describe("captureScreenshot — restricted URL guard", () => {
@@ -419,9 +450,10 @@ describe("captureScreenshot — visible capture", () => {
     // showFlashAndPreview is called via scripting.executeScript
     // The args passed should contain the stripped base64 data
     const execCalls = chrome.scripting.executeScript.calls;
-    // Find the showFlashAndPreview call (args: [b64, warning, captureId])
+    // Find the showFlashAndPreview call
+    // args: [b64, warning, captureId, retryTabId]
     const previewCall = execCalls.find(
-      (c) => c[0].args && c[0].args.length === 3
+      (c) => c[0].args && c[0].args.length === 4
     );
     assert.ok(previewCall, "showFlashAndPreview should have been called");
     assert.equal(previewCall[0].args[0], "abc123");
@@ -511,9 +543,10 @@ describe("captureScreenshot — full page capture", () => {
       true
     );
 
-    // showFlashAndPreview call args are [base64, warning, captureId]
+    // showFlashAndPreview call args are
+    // [base64, warning, captureId, retryTabId]
     const previewCall = chrome.scripting.executeScript.calls.find(
-      (c) => c[0].args && c[0].args.length === 3
+      (c) => c[0].args && c[0].args.length === 4
     );
     assert.ok(previewCall, "Preview injection call should exist");
     assert.equal(previewCall[0].args[0].length, largeBase64.length);
@@ -563,13 +596,13 @@ describe("captureScreenshot — concurrency / latest wins", () => {
 
     const previewCalls = ctx.chrome.scripting.executeScript.calls.filter((c) => {
       const args = c[0].args;
-      return args && args.length === 3 && args[0] === "visibleBase64";
+      return args && args.length === 4 && args[0] === "visibleBase64";
     });
     assert.equal(previewCalls.length, 1);
 
     const stalePreviewCalls = ctx.chrome.scripting.executeScript.calls.filter((c) => {
       const args = c[0].args;
-      return args && args.length === 3 && args[0] === "fakeBase64Data";
+      return args && args.length === 4 && args[0] === "fakeBase64Data";
     });
     assert.equal(stalePreviewCalls.length, 0);
   });
@@ -654,7 +687,59 @@ describe("captureScreenshot — concurrency / latest wins", () => {
       return args[0] === "Copied to clipboard \u2713";
     });
     assert.equal(successLabelUpdates.length, 1);
-    assert.equal(successLabelUpdates[0][0].args[3], 2);
+    assert.equal(successLabelUpdates[0][0].args[3].captureId, 2);
+  });
+});
+
+describe("retryClipboardFromPreview", () => {
+  it("sets progress badge and final success UI state", async () => {
+    const ctx = createBackgroundContext();
+    ctx.context.clipboardWriteFromPreviewViaScript = async () => {};
+
+    await ctx.retryClipboardFromPreview(1);
+
+    const texts = badgeTexts(ctx.chrome);
+    assert.ok(texts.includes("..."));
+    assert.ok(texts.includes("✓"));
+
+    const retryingUpdate = ctx.chrome.scripting.executeScript.calls.find((c) => {
+      const args = c[0].args || [];
+      return args[0] === "Retrying clipboard\u2026";
+    });
+    assert.ok(retryingUpdate, "Should set retrying label");
+    assert.equal(retryingUpdate[0].args[3].retryVisible, true);
+    assert.equal(retryingUpdate[0].args[3].retryEnabled, false);
+    assert.equal(retryingUpdate[0].args[3].retryText, "Retrying\u2026");
+
+    const successUpdate = ctx.chrome.scripting.executeScript.calls.find((c) => {
+      const args = c[0].args || [];
+      return args[0] === "Copied to clipboard \u2713";
+    });
+    assert.ok(successUpdate, "Should set success label after retry");
+    assert.equal(successUpdate[0].args[2], true);
+    assert.equal(successUpdate[0].args[3].retryVisible, false);
+  });
+
+  it("sets failure UI state and disables retry after retry failure", async () => {
+    const ctx = createBackgroundContext();
+    ctx.context.clipboardWriteFromPreviewViaScript = async () => {
+      throw new Error("Document is not focused");
+    };
+
+    await ctx.retryClipboardFromPreview(1);
+
+    const texts = badgeTexts(ctx.chrome);
+    assert.ok(texts.includes("..."));
+    assert.ok(texts.includes("✗"));
+
+    const failureUpdate = ctx.chrome.scripting.executeScript.calls.find((c) => {
+      const args = c[0].args || [];
+      return args[0] === "Clipboard failed — retry used, take a new screenshot";
+    });
+    assert.ok(failureUpdate, "Should set retry-used failure label");
+    assert.equal(failureUpdate[0].args[3].retryVisible, true);
+    assert.equal(failureUpdate[0].args[3].retryEnabled, false);
+    assert.equal(failureUpdate[0].args[3].retryText, "Retry used");
   });
 });
 
@@ -1032,6 +1117,29 @@ describe("clipboardWriteViaScript", () => {
   });
 });
 
+describe("clipboardWriteFromPreviewViaScript", () => {
+  it("injects script targeting the correct tab", async () => {
+    const { clipboardWriteFromPreviewViaScript, chrome } = createBackgroundContext();
+
+    await clipboardWriteFromPreviewViaScript(42);
+
+    assert.equal(chrome.scripting.executeScript.calls.length, 1);
+    const [injection] = chrome.scripting.executeScript.calls[0];
+    assert.deepEqual(injection.target, { tabId: 42 });
+  });
+
+  it("throws when injected script returns undefined result", async () => {
+    const { clipboardWriteFromPreviewViaScript } = createBackgroundContext({
+      executeScriptResult: [{ result: undefined }],
+    });
+
+    await assert.rejects(
+      () => clipboardWriteFromPreviewViaScript(1),
+      { message: "Clipboard write did not complete successfully" }
+    );
+  });
+});
+
 describe("showBadge", () => {
   it("sets badge text and background color", () => {
     const { showBadge, chrome } = createBackgroundContext();
@@ -1090,6 +1198,7 @@ describe("showFlashAndPreview", () => {
     assert.equal(injection.args[0], "imgData");
     assert.equal(injection.args[1], "some warning");
     assert.equal(injection.args[2], null);
+    assert.equal(injection.args[3], 1);
   });
 
   it("passes null warning when not provided", () => {
@@ -1108,6 +1217,7 @@ describe("showFlashAndPreview", () => {
 
     const [injection] = chrome.scripting.executeScript.calls[0];
     assert.equal(injection.args[2], 42);
+    assert.equal(injection.args[3], 1);
   });
 
   it("removes document keydown listener inside dismiss helper", () => {
