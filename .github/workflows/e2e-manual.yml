@@ -1,4 +1,5 @@
 name: E2E (Manual)
+run-name: E2E (${{ inputs.suite }}) · ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -14,6 +15,7 @@ on:
 
 jobs:
   e2e:
+    name: e2e-${{ inputs.suite }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -53,7 +55,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-artifacts
+          name: playwright-artifacts-${{ inputs.suite }}
           path: |
             playwright-report/
             test-results/

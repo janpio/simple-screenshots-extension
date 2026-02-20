@@ -99,6 +99,7 @@ E2E notes:
 - CI runs E2E manually via `.github/workflows/e2e-manual.yml` (`workflow_dispatch`)
   - In GitHub: **Actions** → **E2E (Manual)** → **Run workflow**
   - Select `suite: full` (entire E2E suite) or `suite: plumbing` (decomposed diagnostics only)
+  - Run list/job/artifact names include the selected suite for quick filtering
 
 ## Notes
 

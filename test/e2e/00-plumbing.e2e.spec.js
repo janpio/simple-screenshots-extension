@@ -14,6 +14,10 @@ const { waitForBadge } = require("./helpers/badge");
 let fixtureServer;
 let harness;
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function logRun(label, details) {
   console.log(`[e2e:plumbing:${label}] ${JSON.stringify(details)}`);
 }
@@ -29,6 +33,53 @@ async function activeServiceWorker() {
 
 async function clearBadge(serviceWorker) {
   await serviceWorker.evaluate(() => chrome.action.setBadgeText({ text: "" }));
+}
+
+async function ensureFocused(page, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.bringToFront().catch(() => {});
+    const hasFocus = await page.evaluate(() => document.hasFocus()).catch(() => true);
+    if (hasFocus) return true;
+    await delay(50);
+  }
+  return false;
+}
+
+async function rawCaptureVisibleTab(serviceWorker, url) {
+  return serviceWorker.evaluate(async ({ url }) => {
+    const [tab] = await chrome.tabs.query({ url });
+    if (!tab) {
+      return { ok: false, error: "No tab resolved from fixture URL" };
+    }
+
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+        format: "png",
+      });
+      return {
+        ok: typeof dataUrl === "string" && dataUrl.startsWith("data:image/png;base64,"),
+        dataUrlLength: dataUrl?.length ?? 0,
+        tabId: tab.id,
+        windowId: tab.windowId,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: String(err?.message ?? err),
+        tabId: tab.id,
+        windowId: tab.windowId,
+      };
+    }
+  }, { url });
+}
+
+function isTransientReadbackError(result) {
+  return (
+    !result?.ok &&
+    typeof result?.error === "string" &&
+    /image readback failed/i.test(result.error)
+  );
 }
 
 test.beforeAll(async () => {
@@ -99,37 +150,24 @@ test("plumbing: raw captureVisibleTab works for fixture tab window", async () =>
     "standard.html"
   );
   const serviceWorker = await activeServiceWorker();
-  await page.bringToFront();
+  await ensureFocused(page);
 
-  const result = await serviceWorker.evaluate(async ({ url }) => {
-    const [tab] = await chrome.tabs.query({ url });
-    if (!tab) {
-      return { ok: false, error: "No tab resolved from fixture URL" };
-    }
+  const attempts = [];
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await ensureFocused(page);
+    const result = await rawCaptureVisibleTab(serviceWorker, page.url());
+    attempts.push({ attempt, ...result });
+    if (result.ok) break;
+    if (!isTransientReadbackError(result)) break;
+    await delay(attempt * 150);
+  }
 
-    try {
-      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-        format: "png",
-      });
-      return {
-        ok: typeof dataUrl === "string" && dataUrl.startsWith("data:image/png;base64,"),
-        dataUrlLength: dataUrl?.length ?? 0,
-        tabId: tab.id,
-        windowId: tab.windowId,
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        error: String(err?.message ?? err),
-        tabId: tab.id,
-        windowId: tab.windowId,
-      };
-    }
-  }, { url: page.url() });
+  logRun("raw-capture-visible", { attempts });
 
-  logRun("raw-capture-visible", result);
-  expect(result.ok).toBe(true);
-  expect(result.dataUrlLength).toBeGreaterThan(5000);
+  const success = attempts.find((entry) => entry.ok);
+  expect(Boolean(success)).toBe(true);
+  expect(success.dataUrlLength).toBeGreaterThan(5000);
 });
 
 test("plumbing: runtime-message capture reaches success with clipboard stub", async () => {
