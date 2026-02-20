@@ -22,6 +22,7 @@ Full-page mode is intentionally **height-first**: it expands and captures full v
 - **Restricted pages** — buttons are disabled on `chrome://`, `edge://`, `about:`, Web Store, etc.
 - **Preview** — after capture, a white→dark flash plays, then a scrollable preview panel appears showing the image, dimensions, and clipboard status (spinner while copying, green checkmark on success, red message on failure). Hovering or scrolling the preview pauses the auto-dismiss timer. Warning banners appear when the page exceeds GPU texture limits
 - **Feedback** — pulsing badge (`...`) while capturing, then ✓ or ✗
+- **Concurrency policy** — if multiple captures are triggered on the same tab, the newest capture wins; stale async completions from older runs are ignored
 
 ## Installation
 
@@ -55,6 +56,7 @@ generate-icons.js      — Dev utility to regenerate icons (requires canvas npm 
 
 - **`lib.js`** — Shared functions loaded via `importScripts()` in the service worker, `<script>` in the popup, and injected into target pages during full-page capture. Contains `isRestrictedUrl()`, `measurePageDimensions()`, and `restoreExpandedContainers()`.
 - **`background.js`** — Service worker. Uses `captureVisibleTab` for visible-area and `chrome.debugger` (CDP) for full-page screenshots. Clipboard writing is done via content script injection without stealing focus; the preview shows immediately and updates its label when the clipboard operation completes or fails.
+  If overlapping captures occur on the same tab, it tracks capture IDs and only allows the latest capture to finalize badge/preview/clipboard state.
 - **`popup.html` / `popup.js`** — Two-button popup that disables itself on restricted pages.
 
 ### Full page capture flow

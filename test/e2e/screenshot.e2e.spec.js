@@ -203,6 +203,104 @@ test("popup-first visible capture smoke succeeds with popup or deterministic fal
   expect(metrics.pngBytes).toBeGreaterThan(5000);
 });
 
+test("regression: overlapping captures keep newest clipboard result", async () => {
+  const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
+  const serviceWorker = await activeServiceWorker();
+  await clearBadge(serviceWorker);
+
+  const cssDims = await page.evaluate(() => ({
+    dpr: window.devicePixelRatio || 1,
+    fullHeight: document.documentElement.scrollHeight,
+  }));
+
+  await serviceWorker.evaluate(() => {
+    globalThis.__origClipboardWriteViaScript = clipboardWriteViaScript;
+    globalThis.__overlapClipboardCallCount = 0;
+    globalThis.__overlapClipboardGate = new Promise((resolve) => {
+      globalThis.__releaseBlockedClipboardWrite = resolve;
+    });
+
+    clipboardWriteViaScript = async (...args) => {
+      globalThis.__overlapClipboardCallCount += 1;
+      if (globalThis.__overlapClipboardCallCount === 1) {
+        await globalThis.__overlapClipboardGate;
+      }
+      return globalThis.__origClipboardWriteViaScript(...args);
+    };
+  });
+
+  try {
+    const firstTrigger = await triggerCapture({
+      mode: "full",
+      strategy: "runtime-message",
+      page,
+      context: harness.context,
+      serviceWorker,
+      extensionId: harness.extensionId,
+    });
+
+    await expect.poll(
+      async () => serviceWorker.evaluate(() => globalThis.__overlapClipboardCallCount || 0),
+      { timeout: 30000 }
+    ).toBeGreaterThan(0);
+
+    const secondTrigger = await triggerCapture({
+      mode: "visible",
+      strategy: "runtime-message",
+      page,
+      context: harness.context,
+      serviceWorker,
+      extensionId: harness.extensionId,
+    });
+
+    const badge = await waitForBadge({
+      serviceWorker,
+      expectedText: "✓",
+      timeoutMs: 30000,
+      requireSeen: "...",
+    });
+
+    const beforeRelease = await readClipboardPngMetrics(page);
+
+    await serviceWorker.evaluate(() => {
+      globalThis.__releaseBlockedClipboardWrite?.();
+    });
+    await page.waitForTimeout(600);
+
+    const afterRelease = await readClipboardPngMetrics(page);
+
+    logRun("overlap-full-then-visible", {
+      firstTrigger: firstTrigger.triggerUsed,
+      secondTrigger: secondTrigger.triggerUsed,
+      badgeTimeline: badge.timeline,
+      beforeRelease: {
+        width: beforeRelease.width,
+        height: beforeRelease.height,
+      },
+      afterRelease: {
+        width: afterRelease.width,
+        height: afterRelease.height,
+      },
+    });
+
+    const fullHeight = Math.round(cssDims.fullHeight * cssDims.dpr);
+
+    expect(Math.abs(afterRelease.height - fullHeight)).toBeGreaterThan(300);
+    expect(afterRelease.height).toBe(beforeRelease.height);
+    expect(afterRelease.width).toBe(beforeRelease.width);
+  } finally {
+    await serviceWorker.evaluate(() => {
+      if (globalThis.__origClipboardWriteViaScript) {
+        clipboardWriteViaScript = globalThis.__origClipboardWriteViaScript;
+        delete globalThis.__origClipboardWriteViaScript;
+      }
+      delete globalThis.__overlapClipboardCallCount;
+      delete globalThis.__overlapClipboardGate;
+      delete globalThis.__releaseBlockedClipboardWrite;
+    });
+  }
+});
+
 test("full-page capture on standard fixture preserves dimensions and vertical band order", async () => {
   const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
   const serviceWorker = await activeServiceWorker();

@@ -70,6 +70,14 @@ Uses Chrome DevTools Protocol (CDP). Wrapped in `try/finally` for guaranteed cle
 
 Design tradeoff: full-page capture is intentionally **height-first**. The extension prioritizes full vertical coverage and keeps capture width aligned to the current viewport, rather than attempting horizontal overflow stitching.
 
+## Capture Concurrency Policy
+
+Captures are tracked per tab with monotonic capture IDs. If a newer capture starts before an older one finishes, the newer request becomes authoritative.
+
+- Stale completions from older captures are ignored (no stale badge/preview overwrite)
+- Clipboard/preview updates are capture-scoped so only the latest capture can finalize UI state for that tab
+- User-visible behavior is intentionally silent: no extra warning when an old capture is superseded
+
 ## Core Functions in `lib.js`
 
 ### `isRestrictedUrl(url)`
@@ -126,6 +134,7 @@ Requires document focus — the extension never steals focus:
 1. Inject content script via `chrome.scripting.executeScript` that checks `document.hasFocus()` and calls `navigator.clipboard.write()` with a PNG blob
 2. If the document is not focused, the injected script throws and the error surfaces in the preview label
 3. The clipboard write runs concurrently (fire-and-forget `.then()`) — the preview appears immediately while the clipboard operation completes in the background
+4. Clipboard completion is capture-scoped; if a newer capture supersedes the current one, stale clipboard completions are dropped
 
 ## Testing
 
@@ -156,6 +165,7 @@ Tests use `node:vm` with hand-rolled Chrome API mocks. A `createBackgroundContex
 | Restricted URL guard | chrome://, null URL, undefined tab, Web Store — badge + no capture |
 | Visible capture | captureVisibleTab args, prefix stripping, error badge |
 | Full page capture | Debugger path, success badge, large payload path |
+| Capture concurrency / latest wins | Overlapping runs: stale completion/failure paths are dropped |
 | captureFullPage happy path | CDP command order, clip dimensions, return value |
 | DPR strategy | Native DPR, expanded containers, GPU limit fallback |
 | Dimension clamping | Width capped at 10000, height floored at 1 |
@@ -189,6 +199,7 @@ Key files:
 Current E2E scenario coverage:
 - Visible capture on standard fixture
 - Popup-first visible capture smoke
+- Overlapping captures regression (newest result wins)
 - Full-page capture on standard fixture
 - Full-page capture on nested-scroll fixture
 - Fixed-header duplication regression (multi-run)

@@ -35,6 +35,25 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
+let _captureSequence = 0;
+const _activeCaptureByTab = new Map();
+
+function startCapture(tabId) {
+  const captureId = ++_captureSequence;
+  _activeCaptureByTab.set(tabId, captureId);
+  return captureId;
+}
+
+function isCurrentCapture(tabId, captureId) {
+  return _activeCaptureByTab.get(tabId) === captureId;
+}
+
+function finishCaptureIfCurrent(tabId, captureId) {
+  if (isCurrentCapture(tabId, captureId)) {
+    _activeCaptureByTab.delete(tabId);
+  }
+}
+
 async function captureScreenshot(tab, fullPage) {
   if (!tab?.url || isRestrictedUrl(tab.url)) {
     showBadge("✗", "#ef4444");
@@ -42,8 +61,14 @@ async function captureScreenshot(tab, fullPage) {
     return;
   }
 
+  const tabId = tab.id;
+  const captureId = startCapture(tabId);
+
   // Avoid capturing stale overlays from a previous run.
-  await clearCaptureOverlays(tab.id);
+  await clearCaptureOverlays(tabId);
+  if (!isCurrentCapture(tabId, captureId)) {
+    return;
+  }
   showBadge("...", "#6b7280");
 
   try {
@@ -52,43 +77,78 @@ async function captureScreenshot(tab, fullPage) {
 
     if (fullPage) {
       // Wait until pre-flash fades out so it never contaminates the capture.
-      await showPreFlash(tab.id);
+      await showPreFlash(tabId);
+      if (!isCurrentCapture(tabId, captureId)) {
+        return;
+      }
       const result = await captureFullPage(tab);
+      if (!isCurrentCapture(tabId, captureId)) {
+        return;
+      }
       base64Data = result.data;
       warning = result.warning;
     } else {
       const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
         format: "png"
       });
+      if (!isCurrentCapture(tabId, captureId)) {
+        return;
+      }
       base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
     }
 
     // Flash + preview in a single executeScript call so there's no
     // gap between the flash animation ending and the preview appearing.
-    await showFlashAndPreview(tab.id, base64Data, warning);
+    await showFlashAndPreview(tabId, base64Data, warning, captureId);
+    if (!isCurrentCapture(tabId, captureId)) {
+      return;
+    }
 
     // Write to clipboard in the background — don't block the preview.
     // If it fails, update the preview label to reflect the error.
-    copyToClipboard(tab.id, base64Data).then(
-      () => {
+    copyToClipboard(tabId, base64Data, captureId).then(
+      (copyResult) => {
+        if (copyResult?.stale) {
+          finishCaptureIfCurrent(tabId, captureId);
+          return;
+        }
+        if (!isCurrentCapture(tabId, captureId)) {
+          return;
+        }
         showBadge("✓", "#22c55e");
-        updatePreviewLabel(tab.id, "Copied to clipboard \u2713", "#4ade80", true);
+        updatePreviewLabel(
+          tabId,
+          "Copied to clipboard \u2713",
+          "#4ade80",
+          true,
+          captureId
+        );
+        finishCaptureIfCurrent(tabId, captureId);
       },
       (clipErr) => {
+        if (!isCurrentCapture(tabId, captureId)) {
+          return;
+        }
         console.error("Clipboard error:", clipErr);
         showBadge("✗", "#ef4444");
-        updatePreviewLabel(tab.id,
+        updatePreviewLabel(tabId,
           "Clipboard failed — click tab and retry",
-          "#f87171"
+          "#f87171",
+          false,
+          captureId
         );
+        finishCaptureIfCurrent(tabId, captureId);
       }
     );
   } catch (err) {
+    if (!isCurrentCapture(tabId, captureId)) {
+      return;
+    }
     console.error("Screenshot error:", err);
     showBadge("✗", "#ef4444");
     // Clean up any leftover flash/preview overlays
-    removeOverlay(tab.id, "__screenshot-preflash__");
-    removeOverlay(tab.id, "__screenshot-preview__");
+    removeOverlay(tabId, "__screenshot-preflash__");
+    removeOverlay(tabId, "__screenshot-preview__");
     // Show a helpful message when the failure is due to the tab losing
     // visibility or focus (user switched away during capture/copy).
     const msg = String(err?.message ?? err ?? "");
@@ -97,7 +157,7 @@ async function captureScreenshot(tab, fullPage) {
       msg.includes("already attached")
     ) {
       showError(
-        tab.id,
+        tabId,
         "Cannot capture while DevTools debugger is attached. " +
           "Close DevTools and try again."
       );
@@ -109,11 +169,12 @@ async function captureScreenshot(tab, fullPage) {
       msg.includes("Clipboard write failed")
     ) {
       showError(
-        tab.id,
+        tabId,
         "Screenshot failed — the tab must stay visible during capture. " +
           "Please try again without switching away."
       );
     }
+    finishCaptureIfCurrent(tabId, captureId);
   }
 }
 
@@ -380,13 +441,34 @@ async function captureFullPage(tab) {
   }
 }
 
-async function copyToClipboard(tabId, base64Data) {
+async function copyToClipboard(tabId, base64Data, captureId = null) {
   // Write the PNG to the clipboard via a content script injected into
   // the active tab.  navigator.clipboard.write() requires the document
   // to have focus.  If the user has switched away, the write will fail
   // and the caller shows an explanatory error toast — we never steal
   // window or tab focus.
-  await clipboardWriteViaScript(tabId, base64Data);
+  if (
+    captureId !== null &&
+    captureId !== undefined &&
+    !isCurrentCapture(tabId, captureId)
+  ) {
+    return { ok: false, stale: true };
+  }
+
+  const result = await clipboardWriteViaScript(tabId, base64Data, captureId);
+  if (result?.stale) {
+    return { ok: false, stale: true };
+  }
+
+  if (
+    captureId !== null &&
+    captureId !== undefined &&
+    !isCurrentCapture(tabId, captureId)
+  ) {
+    return { ok: false, stale: true };
+  }
+
+  return { ok: true, stale: false };
 }
 
 async function clearCaptureOverlays(tabId) {
@@ -401,26 +483,57 @@ async function clearCaptureOverlays(tabId) {
 
 // Inject a content script that writes a PNG blob to the clipboard.
 // Returns a promise that resolves on success, rejects on failure.
-async function clipboardWriteViaScript(tabId, base64Data) {
+async function clipboardWriteViaScript(tabId, base64Data, captureId = null) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: async (b64) => {
+    func: async (b64, expectedCaptureId) => {
+      function isStaleCapture() {
+        if (expectedCaptureId === null || expectedCaptureId === undefined) {
+          return false;
+        }
+
+        const preview = document.getElementById("__screenshot-preview__");
+        if (!preview) {
+          return false;
+        }
+
+        return preview.dataset.captureId !== String(expectedCaptureId);
+      }
+
+      if (isStaleCapture()) {
+        return { stale: true };
+      }
       if (!document.hasFocus()) {
         throw new Error("Document is not focused");
       }
+      if (isStaleCapture()) {
+        return { stale: true };
+      }
       const res = await fetch(`data:image/png;base64,${b64}`);
       const blob = await res.blob();
+      if (isStaleCapture()) {
+        return { stale: true };
+      }
       await navigator.clipboard.write([
         new ClipboardItem({ "image/png": blob })
       ]);
+      if (isStaleCapture()) {
+        return { stale: true };
+      }
       return { ok: true };
     },
-    args: [base64Data]
+    args: [base64Data, captureId]
   });
+
+  if (result?.result?.stale) {
+    return { stale: true };
+  }
 
   if (!result?.result?.ok) {
     throw new Error("Clipboard write did not complete successfully");
   }
+
+  return { ok: true, stale: false };
 }
 
 // Remove a named overlay element from the page (cleanup helper).
@@ -533,10 +646,10 @@ function showPreFlash(tabId) {
 // Combined flash + preview in a single executeScript call.
 // The flash animation plays, then the preview is built on the same
 // backdrop element — no extra round-trip, no gap, no pointer-events issues.
-function showFlashAndPreview(tabId, base64Data, warning) {
+function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
   return chrome.scripting.executeScript({
     target: { tabId },
-    func: (b64, warn) => {
+    func: (b64, warn, id) => {
       return new Promise((resolve) => {
         // Remove leftovers
         document.getElementById("__screenshot-preflash__")?.remove();
@@ -559,6 +672,7 @@ function showFlashAndPreview(tabId, base64Data, warning) {
         // --- Flash overlay ---
         const backdrop = document.createElement("div");
         backdrop.id = "__screenshot-preview__";
+        backdrop.dataset.captureId = id === null ? "" : String(id);
         backdrop.style.cssText =
           "position:fixed;inset:0;z-index:2147483647;pointer-events:none;" +
           "background:rgba(0,0,0,0.5);" +
@@ -763,16 +877,32 @@ function showFlashAndPreview(tabId, base64Data, warning) {
         }
       });
     },
-    args: [base64Data, warning ?? null]
+    args: [base64Data, warning ?? null, captureId]
   }).catch(() => {}); // ignore errors on restricted pages
 }
 
 // Update the preview panel's status label and optionally start the
 // auto-dismiss timer (on clipboard success).
-function updatePreviewLabel(tabId, text, color, startTimer = false) {
+function updatePreviewLabel(
+  tabId,
+  text,
+  color,
+  startTimer = false,
+  captureId = null
+) {
   chrome.scripting.executeScript({
     target: { tabId },
-    func: (txt, col, start) => {
+    func: (txt, col, start, expectedCaptureId) => {
+      const backdrop = document.getElementById("__screenshot-preview__");
+      if (expectedCaptureId !== null && expectedCaptureId !== undefined) {
+        if (
+          !backdrop ||
+          backdrop.dataset.captureId !== String(expectedCaptureId)
+        ) {
+          return;
+        }
+      }
+
       const el = document.getElementById("__screenshot-preview-label__");
       if (el) {
         el.textContent = txt;
@@ -781,10 +911,9 @@ function updatePreviewLabel(tabId, text, color, startTimer = false) {
       // Remove spinner — clipboard operation is done
       document.getElementById("__screenshot-preview-spinner__")?.remove();
       if (start) {
-        const bd = document.getElementById("__screenshot-preview__");
-        if (bd?.__startDismissTimer) bd.__startDismissTimer();
+        if (backdrop?.__startDismissTimer) backdrop.__startDismissTimer();
       }
     },
-    args: [text, color, startTimer]
+    args: [text, color, startTimer, captureId]
   }).catch(() => {});
 }

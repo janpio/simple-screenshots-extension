@@ -27,6 +27,7 @@ const backgroundSource = fs.readFileSync(
  *     Runtime.evaluate return { exceptionDetails } when expression includes match
  *   captureVisibleTabResult - data URL returned by tabs.captureVisibleTab
  *   executeScriptResult - return value of scripting.executeScript
+ *   executeScriptImpl - optional custom implementation for scripting.executeScript
  */
 function createBackgroundContext(options = {}) {
   const {
@@ -40,6 +41,7 @@ function createBackgroundContext(options = {}) {
     runtimeEvaluateExceptions = [],
     captureVisibleTabResult = "data:image/png;base64,visibleBase64",
     executeScriptResult = [{ result: { ok: true } }],
+    executeScriptImpl = null,
   } = options;
 
   // --- Recording helper ---
@@ -153,7 +155,11 @@ function createBackgroundContext(options = {}) {
     scripting: {
       executeScript: mockFn(
         "scripting.executeScript",
-        async () => executeScriptResult
+        async (...args) => (
+          executeScriptImpl
+            ? executeScriptImpl(...args)
+            : executeScriptResult
+        )
       ),
     },
     action: {
@@ -260,6 +266,25 @@ function cdpCall(chrome, method) {
 /** Get all badge texts set via chrome.action.setBadgeText. */
 function badgeTexts(chrome) {
   return chrome.action.setBadgeText.calls.map((c) => c[0].text);
+}
+
+function deferredPromise() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForCondition(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error("Timed out waiting for test condition");
 }
 
 // ===========================================================================
@@ -394,9 +419,9 @@ describe("captureScreenshot — visible capture", () => {
     // showFlashAndPreview is called via scripting.executeScript
     // The args passed should contain the stripped base64 data
     const execCalls = chrome.scripting.executeScript.calls;
-    // Find the showFlashAndPreview call (it has args with 2 elements: b64, warning)
+    // Find the showFlashAndPreview call (args: [b64, warning, captureId])
     const previewCall = execCalls.find(
-      (c) => c[0].args && c[0].args.length === 2
+      (c) => c[0].args && c[0].args.length === 3
     );
     assert.ok(previewCall, "showFlashAndPreview should have been called");
     assert.equal(previewCall[0].args[0], "abc123");
@@ -486,9 +511,9 @@ describe("captureScreenshot — full page capture", () => {
       true
     );
 
-    // showFlashAndPreview call has two args: [base64, warning]
+    // showFlashAndPreview call args are [base64, warning, captureId]
     const previewCall = chrome.scripting.executeScript.calls.find(
-      (c) => c[0].args && c[0].args.length === 2
+      (c) => c[0].args && c[0].args.length === 3
     );
     assert.ok(previewCall, "Preview injection call should exist");
     assert.equal(previewCall[0].args[0].length, largeBase64.length);
@@ -500,6 +525,136 @@ describe("captureScreenshot — full page capture", () => {
       texts.includes("✓"),
       "Should complete success path with large payload"
     );
+  });
+});
+
+describe("captureScreenshot — concurrency / latest wins", () => {
+  it("drops stale full-page completion when a newer visible capture starts", async () => {
+    const gate = deferredPromise();
+    const ctx = createBackgroundContext();
+    const originalSendCommand = ctx.chrome.debugger.sendCommand;
+    let blockedFirstFullCapture = false;
+    let delayedOnce = false;
+
+    ctx.chrome.debugger.sendCommand = async (...args) => {
+      const method = args[1];
+      if (method === "Page.captureScreenshot" && !delayedOnce) {
+        delayedOnce = true;
+        blockedFirstFullCapture = true;
+        await gate.promise;
+      }
+      return originalSendCommand(...args);
+    };
+
+    const tab = { url: "https://example.com", id: 1, windowId: 1 };
+    const firstCapture = ctx.captureScreenshot(tab, true);
+    await waitForCondition(() => blockedFirstFullCapture);
+
+    await ctx.captureScreenshot(tab, false);
+    await new Promise((r) => setTimeout(r, 0));
+
+    gate.resolve();
+    await firstCapture;
+    await new Promise((r) => setTimeout(r, 0));
+
+    const texts = badgeTexts(ctx.chrome);
+    assert.equal(texts.filter((t) => t === "✓").length, 1);
+    assert.equal(texts.includes("✗"), false);
+
+    const previewCalls = ctx.chrome.scripting.executeScript.calls.filter((c) => {
+      const args = c[0].args;
+      return args && args.length === 3 && args[0] === "visibleBase64";
+    });
+    assert.equal(previewCalls.length, 1);
+
+    const stalePreviewCalls = ctx.chrome.scripting.executeScript.calls.filter((c) => {
+      const args = c[0].args;
+      return args && args.length === 3 && args[0] === "fakeBase64Data";
+    });
+    assert.equal(stalePreviewCalls.length, 0);
+  });
+
+  it("ignores stale full-page failures so they do not clobber newer success UI", async () => {
+    const gate = deferredPromise();
+    const ctx = createBackgroundContext();
+    const originalSendCommand = ctx.chrome.debugger.sendCommand;
+    let blockedFirstFullCapture = false;
+    let failedFirstFullCapture = false;
+
+    ctx.chrome.debugger.sendCommand = async (...args) => {
+      const method = args[1];
+      if (method === "Page.captureScreenshot" && !failedFirstFullCapture) {
+        failedFirstFullCapture = true;
+        blockedFirstFullCapture = true;
+        await gate.promise;
+        throw new Error("GPU OOM");
+      }
+      return originalSendCommand(...args);
+    };
+
+    const tab = { url: "https://example.com", id: 1, windowId: 1 };
+    const firstCapture = ctx.captureScreenshot(tab, true);
+    await waitForCondition(() => blockedFirstFullCapture);
+
+    await ctx.captureScreenshot(tab, false);
+    await new Promise((r) => setTimeout(r, 0));
+
+    gate.resolve();
+    await firstCapture;
+    await new Promise((r) => setTimeout(r, 0));
+
+    const texts = badgeTexts(ctx.chrome);
+    assert.equal(texts.filter((t) => t === "✓").length, 1);
+    assert.equal(texts.includes("✗"), false);
+
+    const staleCleanupCalls = ctx.chrome.scripting.executeScript.calls.filter((c) => {
+      const args = c[0].args || [];
+      return (
+        args[0] === "__screenshot-preflash__" ||
+        args[0] === "__screenshot-preview__"
+      );
+    });
+    assert.equal(staleCleanupCalls.length, 0);
+  });
+
+  it("allows only the current capture to finalize clipboard success UI", async () => {
+    const firstClipboardGate = deferredPromise();
+    let firstClipboardBlocked = false;
+    const ctx = createBackgroundContext({
+      executeScriptImpl: async (injection) => {
+        const fnSource = injection.func?.toString?.() || "";
+        const isClipboardWrite = fnSource.includes("navigator.clipboard.write");
+        const captureId = injection.args?.[1];
+
+        if (isClipboardWrite && captureId === 1 && !firstClipboardBlocked) {
+          firstClipboardBlocked = true;
+          return firstClipboardGate.promise;
+        }
+
+        return [{ result: { ok: true } }];
+      },
+    });
+
+    const tab = { url: "https://example.com", id: 1, windowId: 1 };
+    await ctx.captureScreenshot(tab, false);
+    await waitForCondition(() => firstClipboardBlocked);
+
+    await ctx.captureScreenshot(tab, false);
+    await new Promise((r) => setTimeout(r, 0));
+
+    firstClipboardGate.resolve([{ result: { stale: true } }]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const texts = badgeTexts(ctx.chrome);
+    assert.equal(texts.filter((t) => t === "✓").length, 1);
+    assert.equal(texts.includes("✗"), false);
+
+    const successLabelUpdates = ctx.chrome.scripting.executeScript.calls.filter((c) => {
+      const args = c[0].args || [];
+      return args[0] === "Copied to clipboard \u2713";
+    });
+    assert.equal(successLabelUpdates.length, 1);
+    assert.equal(successLabelUpdates[0][0].args[3], 2);
   });
 });
 
@@ -853,7 +1008,7 @@ describe("clipboardWriteViaScript", () => {
     await clipboardWriteViaScript(1, "myBase64");
 
     const [injection] = chrome.scripting.executeScript.calls[0];
-    assert.deepEqual(injection.args, ["myBase64"]);
+    assert.deepEqual(injection.args, ["myBase64", null]);
   });
 
   it("throws when injected script returns undefined result", async () => {
@@ -865,6 +1020,15 @@ describe("clipboardWriteViaScript", () => {
       () => clipboardWriteViaScript(1, "data"),
       { message: "Clipboard write did not complete successfully" }
     );
+  });
+
+  it("returns stale marker when injected script reports stale capture", async () => {
+    const { clipboardWriteViaScript } = createBackgroundContext({
+      executeScriptResult: [{ result: { stale: true } }],
+    });
+
+    const result = await clipboardWriteViaScript(1, "data", 7);
+    assert.deepEqual(result, { stale: true });
   });
 });
 
@@ -925,6 +1089,7 @@ describe("showFlashAndPreview", () => {
     assert.deepEqual(injection.target, { tabId: 1 });
     assert.equal(injection.args[0], "imgData");
     assert.equal(injection.args[1], "some warning");
+    assert.equal(injection.args[2], null);
   });
 
   it("passes null warning when not provided", () => {
@@ -934,6 +1099,15 @@ describe("showFlashAndPreview", () => {
 
     const [injection] = chrome.scripting.executeScript.calls[0];
     assert.equal(injection.args[1], null);
+  });
+
+  it("passes capture ID when provided", () => {
+    const { showFlashAndPreview, chrome } = createBackgroundContext();
+
+    showFlashAndPreview(1, "imgData", null, 42);
+
+    const [injection] = chrome.scripting.executeScript.calls[0];
+    assert.equal(injection.args[2], 42);
   });
 
   it("removes document keydown listener inside dismiss helper", () => {
