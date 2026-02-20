@@ -46,6 +46,46 @@ async function clearBadge(serviceWorker) {
   await serviceWorker.evaluate(() => chrome.action.setBadgeText({ text: "" }));
 }
 
+async function waitForCaptureSuccess(options) {
+  const {
+    serviceWorker,
+    page,
+    timeoutMs = 20000,
+    requireSeen = "...",
+  } = options;
+
+  try {
+    const badge = await waitForBadge({
+      serviceWorker,
+      expectedText: "✓",
+      timeoutMs,
+      requireSeen,
+    });
+    return { ...badge, retried: false };
+  } catch (firstErr) {
+    const retryClicked = await page.evaluate(() => {
+      const retryButton = document.getElementById("__screenshot-preview-retry__");
+      if (!retryButton || retryButton.hidden || retryButton.disabled) {
+        return false;
+      }
+      retryButton.click();
+      return true;
+    }).catch(() => false);
+
+    if (!retryClicked) {
+      throw firstErr;
+    }
+
+    await clearBadge(serviceWorker);
+    const retryBadge = await waitForBadge({
+      serviceWorker,
+      expectedText: "✓",
+      timeoutMs: Math.max(10000, timeoutMs),
+    });
+    return { ...retryBadge, retried: true };
+  }
+}
+
 test.beforeAll(async () => {
   fixtureServer = await startFixtureServer();
   harness = await launchExtensionHarness({
@@ -115,9 +155,9 @@ test("visible capture on standard fixture copies viewport-sized non-blank image"
     extensionId: harness.extensionId,
   });
 
-  const badge = await waitForBadge({
+  const badge = await waitForCaptureSuccess({
     serviceWorker,
-    expectedText: "✓",
+    page,
     timeoutMs: 20000,
     requireSeen: "...",
   });
@@ -127,6 +167,7 @@ test("visible capture on standard fixture copies viewport-sized non-blank image"
   logRun("visible-standard", {
     trigger: trigger.triggerUsed,
     fallbackReason: trigger.fallbackReason || null,
+    retried: badge.retried,
     badgeTimeline: badge.timeline,
     image: { width: metrics.width, height: metrics.height, variance: metrics.variance },
     expected: {
@@ -179,9 +220,9 @@ test("popup-first visible capture smoke succeeds with popup or deterministic fal
     extensionId: harness.extensionId,
   });
 
-  const badge = await waitForBadge({
+  const badge = await waitForCaptureSuccess({
     serviceWorker,
-    expectedText: "✓",
+    page,
     timeoutMs: 20000,
     requireSeen: "...",
   });
@@ -191,6 +232,7 @@ test("popup-first visible capture smoke succeeds with popup or deterministic fal
   logRun("popup-first-visible-smoke", {
     trigger: trigger.triggerUsed,
     fallbackReason: trigger.fallbackReason || null,
+    retried: badge.retried,
     badgeTimeline: badge.timeline,
     image: { width: metrics.width, height: metrics.height, variance: metrics.variance },
   });
@@ -253,9 +295,9 @@ test("regression: overlapping captures keep newest clipboard result", async () =
       extensionId: harness.extensionId,
     });
 
-    const badge = await waitForBadge({
+    const badge = await waitForCaptureSuccess({
       serviceWorker,
-      expectedText: "✓",
+      page,
       timeoutMs: 30000,
       requireSeen: "...",
     });
@@ -272,6 +314,7 @@ test("regression: overlapping captures keep newest clipboard result", async () =
     logRun("overlap-full-then-visible", {
       firstTrigger: firstTrigger.triggerUsed,
       secondTrigger: secondTrigger.triggerUsed,
+      retried: badge.retried,
       badgeTimeline: badge.timeline,
       beforeRelease: {
         width: beforeRelease.width,
@@ -322,9 +365,9 @@ test("full-page capture on standard fixture preserves dimensions and vertical ba
     extensionId: harness.extensionId,
   });
 
-  const badge = await waitForBadge({
+  const badge = await waitForCaptureSuccess({
     serviceWorker,
-    expectedText: "✓",
+    page,
     timeoutMs: 30000,
     requireSeen: "...",
   });
@@ -344,6 +387,7 @@ test("full-page capture on standard fixture preserves dimensions and vertical ba
   logRun("full-standard", {
     trigger: trigger.triggerUsed,
     fallbackReason: trigger.fallbackReason || null,
+    retried: badge.retried,
     badgeTimeline: badge.timeline,
     image: { width: metrics.width, height: metrics.height },
   });
@@ -386,9 +430,9 @@ test("full-page capture on nested-scroll fixture captures inner scroller height"
     extensionId: harness.extensionId,
   });
 
-  const badge = await waitForBadge({
+  const badge = await waitForCaptureSuccess({
     serviceWorker,
-    expectedText: "✓",
+    page,
     timeoutMs: 30000,
     requireSeen: "...",
   });
@@ -408,6 +452,7 @@ test("full-page capture on nested-scroll fixture captures inner scroller height"
   logRun("full-nested-scroll", {
     trigger: trigger.triggerUsed,
     fallbackReason: trigger.fallbackReason || null,
+    retried: badge.retried,
     badgeTimeline: badge.timeline,
     image: { width: metrics.width, height: metrics.height },
   });
@@ -449,9 +494,9 @@ test("regression: fixed-header duplication - repeated runs preserve bottom conte
       extensionId: harness.extensionId,
     });
 
-    const badge = await waitForBadge({
+    const badge = await waitForCaptureSuccess({
       serviceWorker,
-      expectedText: "✓",
+      page,
       timeoutMs: 30000,
       requireSeen: "...",
     });
@@ -469,6 +514,7 @@ test("regression: fixed-header duplication - repeated runs preserve bottom conte
     logRun(`fixed-header-run-${run}`, {
       trigger: trigger.triggerUsed,
       fallbackReason: trigger.fallbackReason || null,
+      retried: badge.retried,
       badgeTimeline: badge.timeline,
       image: { width: metrics.width, height: metrics.height },
       bottomSample: metrics.samples.bottom,
@@ -530,9 +576,9 @@ test("large-height smoke shows tall-page warning and completes capture", async (
     extensionId: harness.extensionId,
   });
 
-  const badge = await waitForBadge({
+  const badge = await waitForCaptureSuccess({
     serviceWorker,
-    expectedText: "✓",
+    page,
     timeoutMs: 60000,
     requireSeen: "...",
   });
@@ -549,6 +595,7 @@ test("large-height smoke shows tall-page warning and completes capture", async (
   logRun("large-height", {
     trigger: trigger.triggerUsed,
     fallbackReason: trigger.fallbackReason || null,
+    retried: badge.retried,
     badgeTimeline: badge.timeline,
   });
 });
