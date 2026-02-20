@@ -6,17 +6,17 @@ Simple Screenshots is a Chrome extension (Manifest V3) that captures visible-are
 
 ## Key Files
 
-| File | Lines | Role |
-|------|-------|------|
-| `manifest.json` | — | MV3 manifest: permissions, service worker, popup, web-accessible resources |
-| `background.js` | ~700 | Service worker: capture orchestration, CDP interaction, clipboard, preview overlay |
-| `lib.js` | ~237 | Pure functions shared across 3 contexts (see below) |
-| `popup.html` | ~53 | Popup UI with capture buttons |
-| `popup.js` | ~19 | Popup logic: button state, message passing |
-| `test/lib.test.js` | ~784 | Unit tests for lib.js (Node test runner + jsdom) |
-| `test/background.test.js` | ~700 | Unit tests for background.js (Chrome API mocks + VM context) |
-| `eslint.config.js` | ~112 | ESLint 9 flat config with per-file environment overrides |
-| `.github/workflows/ci.yml` | ~18 | GitHub Actions CI (lint + test on Node 20/22) |
+| File | Role |
+|------|------|
+| `manifest.json` | MV3 manifest: permissions, service worker, popup, web-accessible resources |
+| `background.js` | Service worker: capture orchestration, CDP interaction, clipboard, preview overlay |
+| `lib.js` | Pure functions shared across 3 contexts (see below) |
+| `popup.html` | Popup UI with capture buttons |
+| `popup.js` | Popup logic: button state, message passing |
+| `test/lib.test.js` | Unit tests for lib.js (Node test runner + jsdom) |
+| `test/background.test.js` | Unit tests for background.js (Chrome API mocks + VM context) |
+| `eslint.config.js` | ESLint 9 flat config with per-file environment overrides |
+| `.github/workflows/ci.yml` | GitHub Actions CI (lint + test on Node 20/22) |
 
 ## How `lib.js` Is Loaded (3 Contexts)
 
@@ -132,41 +132,41 @@ Requires document focus — the extension never steals focus:
 Unit tests run on Node 20 and 22 via GitHub Actions (`.github/workflows/ci.yml`).
 E2E tests are implemented with Playwright and run manually via `.github/workflows/e2e-manual.yml`.
 
-### `test/lib.test.js` (31 tests)
+### `test/lib.test.js`
 
 Tests use jsdom + `node:vm` with dynamic getters to stub CSS layout properties.
 
-| Suite | Tests | What's Tested |
-|-------|-------|---------------|
-| `isRestrictedUrl` | 9 | chrome://, edge://, about:, Web Store, null/undefined |
-| Standard page + null body | 2 | Basic measurement path and no-body edge case |
-| Nested scroll container | 4 | Detection, expansion, ancestor expansion, style preservation |
-| Multiple containers | 1 | Selects largest by scrollHeight |
-| Fixed-position modal | 10 | Modal detection, fixed-to-absolute, sticky neutralization, viewport sizing |
-| `restoreExpandedContainers` | 4 | Style restoration, scrollbar style removal, cleanup |
-| `RESTRICTED_URL_PREFIXES` | 1 | Const export works correctly |
+| Suite | What's Tested |
+|-------|---------------|
+| `isRestrictedUrl` | chrome://, edge://, about:, Web Store, null/undefined |
+| Standard page + null body | Basic measurement path and no-body edge case |
+| Nested scroll container | Detection, expansion, ancestor expansion, style preservation |
+| Multiple containers | Selects largest by scrollHeight |
+| Fixed-position modal | Modal detection, fixed-to-absolute, sticky neutralization, viewport sizing |
+| `restoreExpandedContainers` | Style restoration, scrollbar style removal, cleanup |
+| `RESTRICTED_URL_PREFIXES` | Const export works correctly |
 
-### `test/background.test.js` (44 tests)
+### `test/background.test.js`
 
 Tests use `node:vm` with hand-rolled Chrome API mocks. A `createBackgroundContext()` helper builds the full mock `chrome` namespace, loads `background.js`, and captures registered event listeners.
 
-| Suite | Tests | What's Tested |
-|-------|-------|---------------|
-| Event listener registration | 3 | onInstalled menu items, onClicked wiring, onMessage dispatch |
-| Restricted URL guard | 4 | chrome://, null URL, undefined tab, Web Store — badge + no capture |
-| Visible capture | 3 | captureVisibleTab args, prefix stripping, error badge |
-| Full page capture | 3 | Debugger path, success badge, large payload path |
-| captureFullPage happy path | 4 | CDP command order, clip dimensions, return value |
-| DPR strategy | 3 | Native DPR, expanded containers, GPU limit fallback |
-| Dimension clamping | 2 | Width capped at 10000, height floored at 1 |
-| Warnings | 3 | Tiling warning, DPR fallback warning, null when OK |
-| Large page stress | 1 | 50k-height path: fallback DPR, warning, clip/emulation params, cleanup |
-| Cleanup on error | 3 | Detach on failure, skip if never attached, cleanup isolation |
-| Overlay suppression | 1 | Capture continues when Overlay domain unavailable |
-| Runtime.evaluate exceptionDetails | 2 | Clear surfaced errors when CDP eval returns exceptionDetails |
-| clipboardWriteViaScript | 3 | Tab targeting, args, error on undefined result |
-| showBadge | 3 | Text/color, 2s clear timeout, pulse animation |
-| UI injection helpers | 6 | showPreFlash, showFlashAndPreview, removeOverlay, showError |
+| Suite | What's Tested |
+|-------|---------------|
+| Event listener registration | onInstalled menu items, onClicked wiring, onMessage dispatch |
+| Restricted URL guard | chrome://, null URL, undefined tab, Web Store — badge + no capture |
+| Visible capture | captureVisibleTab args, prefix stripping, error badge |
+| Full page capture | Debugger path, success badge, large payload path |
+| captureFullPage happy path | CDP command order, clip dimensions, return value |
+| DPR strategy | Native DPR, expanded containers, GPU limit fallback |
+| Dimension clamping | Width capped at 10000, height floored at 1 |
+| Warnings | Tiling warning, DPR fallback warning, null when OK |
+| Large page stress | 50k-height path: fallback DPR, warning, clip/emulation params, cleanup |
+| Cleanup on error | Detach on failure, skip if never attached, cleanup isolation |
+| Overlay suppression | Capture continues when Overlay domain unavailable |
+| Runtime.evaluate exceptionDetails | Clear surfaced errors when CDP eval returns exceptionDetails |
+| clipboardWriteViaScript | Tab targeting, args, error on undefined result |
+| showBadge | Text/color, 2s clear timeout, pulse animation |
+| UI injection helpers | showPreFlash, showFlashAndPreview, removeOverlay, showError |
 
 ### `test/e2e/screenshot.e2e.spec.js` (Playwright, Chromium-only)
 
@@ -188,6 +188,7 @@ Key files:
 
 Current E2E scenario coverage:
 - Visible capture on standard fixture
+- Popup-first visible capture smoke
 - Full-page capture on standard fixture
 - Full-page capture on nested-scroll fixture
 - Fixed-header duplication regression (multi-run)

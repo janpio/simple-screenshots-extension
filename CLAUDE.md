@@ -6,6 +6,7 @@ See ARCHITECTURE.md for detailed design, capture flows, and test inventory.
 
 ```sh
 npm test       # run unit tests (Node.js test runner + jsdom)
+npm run test:e2e # run Playwright E2E suite (manual, headed Chromium)
 npm run lint   # ESLint 9 flat config — per-file env overrides for browser/extension/node
 ```
 

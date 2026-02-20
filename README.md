@@ -45,8 +45,8 @@ popup.html             — Popup UI
 popup.js               — Popup logic
 manifest.json          — Extension manifest (MV3)
 package.json           — Dev dependencies and test script
-test/lib.test.js       — Unit tests for lib.js (31 tests)
-test/background.test.js — Unit tests for background.js (38 tests)
+test/lib.test.js       — Unit tests for lib.js
+test/background.test.js — Unit tests for background.js
 icons/                 — Extension icons (16, 48, 128)
 generate-icons.js      — Dev utility to regenerate icons (requires canvas npm package)
 ```
@@ -80,7 +80,7 @@ generate-icons.js      — Dev utility to regenerate icons (requires canvas npm 
 ## Testing
 
 ```sh
-npm install    # first time only — installs jsdom
+npm install    # first time only
 npm test       # runs all tests
 npm run test:e2e   # runs Playwright E2E suite (Chromium extension harness)
 ```

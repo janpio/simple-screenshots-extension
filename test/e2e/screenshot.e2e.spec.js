@@ -164,6 +164,45 @@ test("visible capture on standard fixture copies viewport-sized non-blank image"
   expect(metrics.pngBytes).toBeGreaterThan(5000);
 });
 
+test("popup-first visible capture smoke succeeds with popup or deterministic fallback", async () => {
+  const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
+  const serviceWorker = await activeServiceWorker();
+  await clearBadge(serviceWorker);
+
+  const trigger = await triggerCapture({
+    mode: "visible",
+    strategy: "popup-first",
+    popupTimeoutMs: 750,
+    page,
+    context: harness.context,
+    serviceWorker,
+    extensionId: harness.extensionId,
+  });
+
+  const badge = await waitForBadge({
+    serviceWorker,
+    expectedText: "✓",
+    timeoutMs: 20000,
+    requireSeen: "...",
+  });
+
+  const metrics = await readClipboardPngMetrics(page);
+
+  logRun("popup-first-visible-smoke", {
+    trigger: trigger.triggerUsed,
+    fallbackReason: trigger.fallbackReason || null,
+    badgeTimeline: badge.timeline,
+    image: { width: metrics.width, height: metrics.height, variance: metrics.variance },
+  });
+
+  expect(["popup", "runtime-message"]).toContain(trigger.triggerUsed);
+  if (trigger.triggerUsed === "runtime-message") {
+    expect(typeof trigger.fallbackReason).toBe("string");
+  }
+  expect(metrics.variance).toBeGreaterThan(30);
+  expect(metrics.pngBytes).toBeGreaterThan(5000);
+});
+
 test("full-page capture on standard fixture preserves dimensions and vertical band order", async () => {
   const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
   const serviceWorker = await activeServiceWorker();
