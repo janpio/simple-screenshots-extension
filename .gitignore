@@ -2,6 +2,10 @@
 .claude/
 node_modules/
 coverage/
+playwright-report/
+test-results/
+test/e2e/playwright-report/
+test/e2e/test-results/
 *.log
 .DS_Store
 Thumbs.db

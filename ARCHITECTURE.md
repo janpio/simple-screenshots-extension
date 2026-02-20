@@ -129,7 +129,8 @@ Requires document focus — the extension never steals focus:
 
 ## Testing
 
-Unit tests only (E2E planned, see `TODO-e2e-tests.md`). CI runs on Node 20 and 22 via GitHub Actions.
+Unit tests run on Node 20 and 22 via GitHub Actions (`.github/workflows/ci.yml`).
+E2E tests are implemented with Playwright and run manually via `.github/workflows/e2e-manual.yml`.
 
 ### `test/lib.test.js` (31 tests)
 
@@ -166,3 +167,37 @@ Tests use `node:vm` with hand-rolled Chrome API mocks. A `createBackgroundContex
 | clipboardWriteViaScript | 3 | Tab targeting, args, error on undefined result |
 | showBadge | 3 | Text/color, 2s clear timeout, pulse animation |
 | UI injection helpers | 6 | showPreFlash, showFlashAndPreview, removeOverlay, showError |
+
+### `test/e2e/screenshot.e2e.spec.js` (Playwright, Chromium-only)
+
+The E2E suite validates real browser rendering and clipboard behavior in a loaded extension context.
+It is serialised (`workers: 1`) to avoid clipboard contention and uses runtime-message triggering for deterministic automation.
+Popup triggering remains available in the helper for targeted popup-specific checks.
+For deterministic automation, the harness loads a temporary extension bundle with test-only
+`host_permissions: ["<all_urls>"]` (production manifest remains unchanged).
+
+Key files:
+- `test/e2e/playwright.config.js` — runner config, artifacts on failure
+- `test/e2e/helpers/extension.js` — extension harness bootstrap + service worker resolution
+- `test/e2e/helpers/server.js` — local fixture HTTP server
+- `test/e2e/helpers/trigger.js` — runtime-message trigger + optional popup-first path
+- `test/e2e/helpers/badge.js` — badge polling and timeline capture
+- `test/e2e/helpers/clipboard.js` — clipboard PNG decode + metric/color assertions
+- `test/e2e/fixtures/*.html` — deterministic pages for scenario coverage
+- `test/e2e/regressions/registry.json` — metadata for regression-derived cases
+
+Current E2E scenario coverage:
+- Visible capture on standard fixture
+- Full-page capture on standard fixture
+- Full-page capture on nested-scroll fixture
+- Fixed-header duplication regression (multi-run)
+- Restricted URL handling (`chrome://extensions`)
+- Large-height full-page smoke (warning path)
+- Clipboard focus-loss negative path
+
+Regression intake workflow:
+1. Reproduce issue on real site
+2. Classify DOM/layout pattern causing failure
+3. Build minimal deterministic local fixture matching that pattern
+4. Add one focused E2E regression test
+5. Record metadata entry in `test/e2e/regressions/registry.json`

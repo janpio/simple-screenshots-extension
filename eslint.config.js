@@ -4,7 +4,16 @@ module.exports = [
   js.configs.recommended,
 
   // Ignore dependencies and generated files
-  { ignores: ["node_modules/", "icons/"] },
+  {
+    ignores: [
+      "node_modules/",
+      "icons/",
+      "playwright-report/",
+      "test-results/",
+      "test/e2e/playwright-report/",
+      "test/e2e/test-results/",
+    ],
+  },
 
   // Shared rules for all files
   {
@@ -92,9 +101,17 @@ module.exports = [
       sourceType: "script",
       globals: {
         require: "readonly",
+        module: "readonly",
+        process: "readonly",
         __dirname: "readonly",
         console: "readonly",
         setTimeout: "readonly",
+        chrome: "readonly",
+        window: "readonly",
+        document: "readonly",
+        navigator: "readonly",
+        createImageBitmap: "readonly",
+        clipboardWriteViaScript: "writable",
       },
     },
   },

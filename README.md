@@ -82,9 +82,17 @@ generate-icons.js      — Dev utility to regenerate icons (requires canvas npm 
 ```sh
 npm install    # first time only — installs jsdom
 npm test       # runs all tests
+npm run test:e2e   # runs Playwright E2E suite (Chromium extension harness)
 ```
 
 Tests use Node's built-in `node:test` runner with `jsdom`. Since jsdom doesn't do real CSS layout, `scrollHeight`/`clientHeight` are stubbed with dynamic getters.
+
+E2E notes:
+- Install browser runtime once: `npx playwright install chromium`
+- E2E runs in headed Chromium (extensions are not loaded in regular headless mode)
+- E2E scenarios trigger capture via runtime message by default for deterministic runs (popup triggering is available for targeted tests)
+- E2E harness loads a temporary extension copy with test-only `host_permissions: ["<all_urls>"]` so capture flows are automatable without toolbar-click `activeTab` grants
+- CI runs E2E manually via `.github/workflows/e2e-manual.yml` (`workflow_dispatch`)
 
 ## Notes
 

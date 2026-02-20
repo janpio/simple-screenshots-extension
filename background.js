@@ -42,6 +42,8 @@ async function captureScreenshot(tab, fullPage) {
     return;
   }
 
+  // Avoid capturing stale overlays from a previous run.
+  await clearCaptureOverlays(tab.id);
   showBadge("...", "#6b7280");
 
   try {
@@ -49,7 +51,8 @@ async function captureScreenshot(tab, fullPage) {
     let warning = null;
 
     if (fullPage) {
-      showPreFlash(tab.id);
+      // Wait until pre-flash fades out so it never contaminates the capture.
+      await showPreFlash(tab.id);
       const result = await captureFullPage(tab);
       base64Data = result.data;
       warning = result.warning;
@@ -168,12 +171,27 @@ async function captureFullPage(tab) {
     );
     const viewportWidth = Math.ceil(metrics.cssLayoutViewport.clientWidth);
 
-    // Inject lib.js into the page so measurePageDimensions is available
-    await evaluateInPage(
+    // Inject lib.js once per document so repeated captures on the same tab
+    // do not re-declare top-level const bindings.
+    const hasLibResult = await evaluateInPage(
       debuggee,
-      await fetch(chrome.runtime.getURL("lib.js")).then((r) => r.text()),
-      "Injecting lib.js into target page"
+      `window.__simpleScreenshotsLibReady === true &&
+       typeof measurePageDimensions === 'function' &&
+       typeof restoreExpandedContainers === 'function'`,
+      "Checking injected page helpers"
     );
+    if (!hasLibResult?.value) {
+      await evaluateInPage(
+        debuggee,
+        await fetch(chrome.runtime.getURL("lib.js")).then((r) => r.text()),
+        "Injecting lib.js into target page"
+      );
+      await evaluateInPage(
+        debuggee,
+        `window.__simpleScreenshotsLibReady = true`,
+        "Marking injected page helpers"
+      );
+    }
 
     // Measure the true scrollable content height.
     // This also detects and expands nested scroll containers (SPAs, etc.).
@@ -371,6 +389,16 @@ async function copyToClipboard(tabId, base64Data) {
   await clipboardWriteViaScript(tabId, base64Data);
 }
 
+async function clearCaptureOverlays(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      document.getElementById("__screenshot-preflash__")?.remove();
+      document.getElementById("__screenshot-preview__")?.remove();
+    }
+  }).catch(() => {});
+}
+
 // Inject a content script that writes a PNG blob to the clipboard.
 // Returns a promise that resolves on success, rejects on failure.
 async function clipboardWriteViaScript(tabId, base64Data) {
@@ -464,21 +492,39 @@ function showError(tabId, message) {
 }
 
 // Soft pre-flash for full-page capture: a gentle white blink that says
-// "capture started".  Fire-and-forget — it completes on its own.
+// "capture started". Resolves when the flash is removed so it cannot
+// appear inside the captured screenshot.
 function showPreFlash(tabId) {
-  chrome.scripting.executeScript({
+  return chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      document.getElementById("__screenshot-preflash__")?.remove();
-      const el = document.createElement("div");
-      el.id = "__screenshot-preflash__";
-      el.style.cssText =
-        "position:fixed;inset:0;z-index:2147483647;pointer-events:none;" +
-        "background:white;opacity:0.5;transition:opacity 0.35s ease-out;";
-      document.documentElement.appendChild(el);
-      requestAnimationFrame(() => {
-        el.style.opacity = "0";
-        el.addEventListener("transitionend", () => el.remove(), { once: true });
+      return new Promise((resolve) => {
+        document.getElementById("__screenshot-preflash__")?.remove();
+        const el = document.createElement("div");
+        el.id = "__screenshot-preflash__";
+        el.style.cssText =
+          "position:fixed;inset:0;z-index:2147483647;pointer-events:none;" +
+          "background:white;opacity:0.5;transition:opacity 0.35s ease-out;";
+        document.documentElement.appendChild(el);
+
+        let settled = false;
+        function done() {
+          if (settled) return;
+          settled = true;
+          el.remove();
+          resolve(true);
+        }
+
+        // transitionend may not fire in reduced-motion or throttled tabs.
+        const fallback = setTimeout(done, 450);
+        el.addEventListener("transitionend", () => {
+          clearTimeout(fallback);
+          done();
+        }, { once: true });
+
+        requestAnimationFrame(() => {
+          el.style.opacity = "0";
+        });
       });
     }
   }).catch(() => {});

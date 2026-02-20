@@ -1,0 +1,10 @@
+[
+  {
+    "id": "reg-20260219-capture-beyond-viewport",
+    "source_issue": "captureBeyondViewport duplication",
+    "pattern": "fixed-header-duplication",
+    "fixture": "fixed-header.html",
+    "expected_outcome": "Bottom sections are captured once and preserve unique late-page band colors.",
+    "notes": "Derived from historical repeated/tiled content behavior near the bottom of full-page captures."
+  }
+]

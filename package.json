@@ -5,11 +5,14 @@
   },
   "scripts": {
     "test": "node --test test/lib.test.js test/background.test.js",
+    "test:e2e": "playwright test -c test/e2e/playwright.config.js",
+    "test:e2e:headed": "playwright test -c test/e2e/playwright.config.js --headed",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@playwright/test": "^1.58.2",
     "eslint": "^9.39.2",
     "jsdom": "^26.0.0"
   },

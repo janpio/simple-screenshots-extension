@@ -112,7 +112,13 @@ function createBackgroundContext(options = {}) {
                   };
                 }
               }
-              if (expr.includes("measurePageDimensions")) {
+              if (
+                expr.includes("__simpleScreenshotsLibReady") &&
+                expr.includes("typeof measurePageDimensions")
+              ) {
+                return { result: { value: false } };
+              }
+              if (expr.includes("JSON.stringify(measurePageDimensions())")) {
                 return {
                   result: {
                     value: JSON.stringify({
@@ -517,17 +523,19 @@ describe("captureFullPage — happy path", () => {
     const methods = cdpMethods(chrome);
     // Main sequence (before cleanup)
     assert.equal(methods[0], "Page.getLayoutMetrics");
-    assert.equal(methods[1], "Runtime.evaluate"); // inject lib.js
-    assert.equal(methods[2], "Runtime.evaluate"); // measurePageDimensions
-    assert.equal(methods[3], "Runtime.evaluate"); // expanded count
-    assert.equal(methods[4], "Runtime.evaluate"); // devicePixelRatio
-    assert.equal(methods[5], "Runtime.evaluate"); // scrollbar hiding
-    assert.equal(methods[6], "Overlay.setShowViewportSizeOnResize");
-    assert.equal(methods[7], "Runtime.evaluate"); // resize blocker
-    assert.equal(methods[8], "Emulation.setDeviceMetricsOverride");
-    assert.equal(methods[9], "Page.captureScreenshot");
+    assert.equal(methods[1], "Runtime.evaluate"); // injected helpers check
+    assert.equal(methods[2], "Runtime.evaluate"); // inject lib.js
+    assert.equal(methods[3], "Runtime.evaluate"); // mark injected helpers
+    assert.equal(methods[4], "Runtime.evaluate"); // measurePageDimensions
+    assert.equal(methods[5], "Runtime.evaluate"); // expanded count
+    assert.equal(methods[6], "Runtime.evaluate"); // devicePixelRatio
+    assert.equal(methods[7], "Runtime.evaluate"); // scrollbar hiding
+    assert.equal(methods[8], "Overlay.setShowViewportSizeOnResize");
+    assert.equal(methods[9], "Runtime.evaluate"); // resize blocker
+    assert.equal(methods[10], "Emulation.setDeviceMetricsOverride");
+    assert.equal(methods[11], "Page.captureScreenshot");
     // Cleanup
-    assert.equal(methods[10], "Emulation.clearDeviceMetricsOverride");
+    assert.equal(methods[12], "Emulation.clearDeviceMetricsOverride");
   });
 
   it("returns { data, warning } object", async () => {
@@ -811,7 +819,7 @@ describe("captureFullPage — Runtime.evaluate exceptionDetails", () => {
     const { captureFullPage, chrome } = createBackgroundContext({
       runtimeEvaluateExceptions: [
         {
-          match: "measurePageDimensions",
+          match: "JSON.stringify(measurePageDimensions())",
           details: "ReferenceError: measurePageDimensions is not defined",
         },
       ],
