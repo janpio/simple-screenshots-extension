@@ -80,9 +80,11 @@ async function triggerViaRuntimeMessage(options) {
   const { mode, context, extensionId } = options;
   const page = resolveLiveFixturePage(context, extensionId, options.page);
   let sender = findPopupPage(context, extensionId);
+  let createdSender = false;
 
   if (!sender) {
     sender = await context.newPage();
+    createdSender = true;
     await sender.goto(`chrome-extension://${extensionId}/popup.html`);
     await sender.waitForLoadState("domcontentloaded");
   }
@@ -112,6 +114,21 @@ async function triggerViaRuntimeMessage(options) {
   await sender.evaluate(({ fullPage, tabId }) => {
     return chrome.runtime.sendMessage({ action: "capture", fullPage, tabId });
   }, { fullPage: mode === "full", tabId: targetTabId });
+
+  // Runtime-message sender is an extension page and can steal focus from the
+  // target tab. Refocus deterministically so captureVisibleTab/clipboard paths
+  // operate against the fixture tab in CI.
+  await page.bringToFront().catch(() => {});
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const hasFocus = await page.evaluate(() => document.hasFocus()).catch(() => true);
+    if (hasFocus) break;
+    await delay(50);
+    await page.bringToFront().catch(() => {});
+  }
+
+  if (createdSender && sender && !sender.isClosed()) {
+    await sender.close().catch(() => {});
+  }
 
   return { triggerUsed: "runtime-message" };
 }

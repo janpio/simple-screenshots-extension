@@ -2,6 +2,15 @@ name: E2E (Manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Test suite to run
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - plumbing
 
 jobs:
   e2e:
@@ -21,8 +30,24 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      - name: Select E2E command
+        id: select
+        run: |
+          case "${{ inputs.suite }}" in
+            full)
+              echo "cmd=npm run test:e2e" >> "$GITHUB_OUTPUT"
+              ;;
+            plumbing)
+              echo "cmd=npm run test:e2e:plumbing" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported suite: ${{ inputs.suite }}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Run E2E tests
-        run: xvfb-run -a npm run test:e2e
+        run: xvfb-run -a ${{ steps.select.outputs.cmd }}
 
       - name: Upload Playwright artifacts (failure)
         if: failure()

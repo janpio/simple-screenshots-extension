@@ -139,7 +139,8 @@ Requires document focus — the extension never steals focus:
 ## Testing
 
 Unit tests run on Node 20 and 22 via GitHub Actions (`.github/workflows/ci.yml`).
-E2E tests are implemented with Playwright and run manually via `.github/workflows/e2e-manual.yml`.
+E2E tests are implemented with Playwright and run manually via `.github/workflows/e2e-manual.yml`
+(`workflow_dispatch`, suite input: `full` or `plumbing`).
 
 ### `test/lib.test.js`
 
@@ -188,6 +189,7 @@ For deterministic automation, the harness loads a temporary extension bundle wit
 
 Key files:
 - `test/e2e/playwright.config.js` — runner config, artifacts on failure
+- `test/e2e/00-plumbing.e2e.spec.js` — decomposition diagnostics for core automation plumbing
 - `test/e2e/helpers/extension.js` — extension harness bootstrap + service worker resolution
 - `test/e2e/helpers/server.js` — local fixture HTTP server
 - `test/e2e/helpers/trigger.js` — runtime-message trigger + optional popup-first path
@@ -197,6 +199,7 @@ Key files:
 - `test/e2e/regressions/registry.json` — metadata for regression-derived cases
 
 Current E2E scenario coverage:
+- Plumbing diagnostics: tab resolution, raw `captureVisibleTab`, runtime-message path with clipboard stub, direct clipboard roundtrip
 - Visible capture on standard fixture
 - Popup-first visible capture smoke
 - Overlapping captures regression (newest result wins)

@@ -85,6 +85,7 @@ generate-icons.js      — Dev utility to regenerate icons (requires canvas npm 
 npm install    # first time only
 npm test       # runs all tests
 npm run test:e2e   # runs Playwright E2E suite (Chromium extension harness)
+npm run test:e2e:plumbing   # runs only plumbing diagnostics (capture/tab/clipboard layers)
 ```
 
 Tests use Node's built-in `node:test` runner with `jsdom`. Since jsdom doesn't do real CSS layout, `scrollHeight`/`clientHeight` are stubbed with dynamic getters.
@@ -92,9 +93,12 @@ Tests use Node's built-in `node:test` runner with `jsdom`. Since jsdom doesn't d
 E2E notes:
 - Install browser runtime once: `npx playwright install chromium`
 - E2E runs in headed Chromium (extensions are not loaded in regular headless mode)
+- `test/e2e/00-plumbing.e2e.spec.js` runs first and isolates core plumbing (tab targeting, raw `captureVisibleTab`, runtime-message trigger path with clipboard stub, focused-page clipboard roundtrip)
 - E2E scenarios trigger capture via runtime message by default for deterministic runs (popup triggering is available for targeted tests)
 - E2E harness loads a temporary extension copy with test-only `host_permissions: ["<all_urls>"]` so capture flows are automatable without toolbar-click `activeTab` grants
 - CI runs E2E manually via `.github/workflows/e2e-manual.yml` (`workflow_dispatch`)
+  - In GitHub: **Actions** → **E2E (Manual)** → **Run workflow**
+  - Select `suite: full` (entire E2E suite) or `suite: plumbing` (decomposed diagnostics only)
 
 ## Notes
 
