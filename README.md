@@ -83,9 +83,12 @@ generate-icons.js      — Dev utility to regenerate icons (requires canvas npm 
 
 ```sh
 npm install    # first time only
-npm test       # runs all tests
+npm test       # alias for unit tests
+npm run test:unit  # runs unit tests (Node test runner + jsdom)
 npm run test:e2e   # runs Playwright E2E suite (Chromium extension harness)
+npm run test:all   # runs unit + E2E tests
 npm run test:e2e:plumbing   # runs only plumbing diagnostics (capture/tab/clipboard layers)
+npm run test:e2e:popup-only # runs only popup-path coverage
 ```
 
 Tests use Node's built-in `node:test` runner with `jsdom`. Since jsdom doesn't do real CSS layout, `scrollHeight`/`clientHeight` are stubbed with dynamic getters.
@@ -98,7 +101,7 @@ E2E notes:
 - E2E harness loads a temporary extension copy with test-only `host_permissions: ["<all_urls>"]` so capture flows are automatable without toolbar-click `activeTab` grants
 - CI runs E2E manually via `.github/workflows/e2e-manual.yml` (`workflow_dispatch`)
   - In GitHub: **Actions** → **E2E (Manual)** → **Run workflow**
-  - Select `suite: full` (entire E2E suite) or `suite: plumbing` (decomposed diagnostics only)
+  - Select `suite: full` (entire E2E suite), `suite: plumbing` (decomposed diagnostics), or `suite: popup-only` (popup-path only)
   - Run list/job/artifact names include the selected suite for quick filtering
 
 ## Notes

@@ -12,6 +12,7 @@ on:
         options:
           - full
           - plumbing
+          - popup-only
 
 jobs:
   e2e:
@@ -41,6 +42,9 @@ jobs:
               ;;
             plumbing)
               echo "cmd=npm run test:e2e:plumbing" >> "$GITHUB_OUTPUT"
+              ;;
+            popup-only)
+              echo "cmd=npm run test:e2e:popup-only" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "Unsupported suite: ${{ inputs.suite }}" >&2

@@ -5,8 +5,11 @@ See ARCHITECTURE.md for detailed design, capture flows, and test inventory.
 ## Commands
 
 ```sh
-npm test       # run unit tests (Node.js test runner + jsdom)
+npm test       # alias for unit tests
+npm run test:unit # run unit tests (Node.js test runner + jsdom)
 npm run test:e2e # run Playwright E2E suite (manual, headed Chromium)
+npm run test:all # run unit + E2E suites
+npm run test:e2e:popup-only # run popup-only E2E coverage
 npm run lint   # ESLint 9 flat config — per-file env overrides for browser/extension/node
 ```
 

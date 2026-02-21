@@ -27,6 +27,22 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // Handle messages from popup/content scripts
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === "capture") {
+    if (Number.isInteger(msg.tabId)) {
+      chrome.tabs.get(msg.tabId, (tab) => {
+        if (tab) {
+          captureScreenshot(tab, msg.fullPage);
+          return;
+        }
+
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]) {
+            captureScreenshot(tabs[0], msg.fullPage);
+          }
+        });
+      });
+      return;
+    }
+
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         captureScreenshot(tabs[0], msg.fullPage);
@@ -67,6 +83,39 @@ function isCurrentCapture(tabId, captureId) {
 function finishCaptureIfCurrent(tabId, captureId) {
   if (isCurrentCapture(tabId, captureId)) {
     _activeCaptureByTab.delete(tabId);
+  }
+}
+
+function messageFromError(err) {
+  return String(err?.message ?? err ?? "");
+}
+
+function isIgnorableBestEffortError(err) {
+  const msg = messageFromError(err);
+  return (
+    msg.includes("No tab with given id") ||
+    msg.includes("No tab with id") ||
+    msg.includes("No window with id") ||
+    msg.includes("No target with given id") ||
+    msg.includes("Inspected target navigated or closed") ||
+    msg.includes("Target closed") ||
+    msg.includes("Cannot access")
+  );
+}
+
+function logBestEffortError(operation, err) {
+  if (isIgnorableBestEffortError(err)) {
+    return;
+  }
+  console.warn(`${operation} failed: ${messageFromError(err)}`);
+}
+
+async function runBestEffort(operation, fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    logBestEffortError(operation, err);
+    return undefined;
   }
 }
 
@@ -333,13 +382,14 @@ async function captureFullPage(tab) {
     // Suppress the "viewport size" overlay Chrome shows during emulation.
     // This is cosmetic-only, so ignore errors (the Overlay domain may not
     // be available in every Chrome build).
-    try {
-      await chrome.debugger.sendCommand(
+    await runBestEffort(
+      "Disabling viewport size overlay",
+      () => chrome.debugger.sendCommand(
         debuggee,
         "Overlay.setShowViewportSizeOnResize",
         { show: false }
-      );
-    } catch (_) {}
+      )
+    );
 
     // Block resize / ResizeObserver events so that setDeviceMetricsOverride
     // doesn't trigger framework re-renders that undo our DOM changes.
@@ -418,15 +468,17 @@ async function captureFullPage(tab) {
     // Each step is wrapped individually so a failure in one doesn't
     // prevent the others from running.
     if (attached) {
-      try {
-        await chrome.debugger.sendCommand(
+      await runBestEffort(
+        "Clearing emulation override",
+        () => chrome.debugger.sendCommand(
           debuggee,
           "Emulation.clearDeviceMetricsOverride"
-        );
-      } catch (_) {}
+        )
+      );
 
-      try {
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+      await runBestEffort(
+        "Restoring resize handlers",
+        () => chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
           expression: `(() => {
             if (window.__screenshotResizeBlocker) {
               window.removeEventListener('resize', window.__screenshotResizeBlocker, true);
@@ -438,26 +490,26 @@ async function captureFullPage(tab) {
             }
           })()`,
           returnByValue: true
-        });
-      } catch (_) {}
+        })
+      );
 
-      try {
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+      await runBestEffort(
+        "Removing scrollbar override style",
+        () => chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
           expression: `document.getElementById('__screenshot-hide-scrollbars__')?.remove()`,
           returnByValue: true
-        });
-      } catch (_) {}
+        })
+      );
 
-      try {
-        await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+      await runBestEffort(
+        "Restoring expanded page containers",
+        () => chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
           expression: `typeof restoreExpandedContainers === 'function' && restoreExpandedContainers()`,
           returnByValue: true
-        });
-      } catch (_) {}
+        })
+      );
 
-      try {
-        await chrome.debugger.detach(debuggee);
-      } catch (_) {}
+      await runBestEffort("Detaching debugger", () => chrome.debugger.detach(debuggee));
     }
   }
 }
@@ -536,13 +588,16 @@ async function retryClipboardFromPreview(tabId) {
 }
 
 async function clearCaptureOverlays(tabId) {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      document.getElementById("__screenshot-preflash__")?.remove();
-      document.getElementById("__screenshot-preview__")?.remove();
-    }
-  }).catch(() => {});
+  await runBestEffort(
+    "Clearing capture overlays",
+    () => chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        document.getElementById("__screenshot-preflash__")?.remove();
+        document.getElementById("__screenshot-preview__")?.remove();
+      }
+    })
+  );
 }
 
 // Inject a content script that writes a PNG blob to the clipboard.
@@ -633,11 +688,14 @@ async function clipboardWriteFromPreviewViaScript(tabId) {
 
 // Remove a named overlay element from the page (cleanup helper).
 function removeOverlay(tabId, elementId) {
-  chrome.scripting.executeScript({
-    target: { tabId },
-    func: (id) => { document.getElementById(id)?.remove(); },
-    args: [elementId]
-  }).catch(() => {});
+  void runBestEffort(
+    "Removing overlay element",
+    () => chrome.scripting.executeScript({
+      target: { tabId },
+      func: (id) => { document.getElementById(id)?.remove(); },
+      args: [elementId]
+    })
+  );
 }
 
 let _badgeClearTimer = null;
@@ -665,87 +723,95 @@ function showBadge(text, color) {
 // Inject an error toast into the page so the user knows what went wrong.
 // The toast stays visible until the user clicks it (or presses Escape).
 function showError(tabId, message) {
-  chrome.scripting.executeScript({
-    target: { tabId },
-    func: (msg) => {
-      document.getElementById("__screenshot-error__")?.remove();
+  void runBestEffort(
+    "Showing error toast",
+    () => chrome.scripting.executeScript({
+      target: { tabId },
+      func: (msg) => {
+        document.getElementById("__screenshot-error__")?.remove();
 
-      const toast = document.createElement("div");
-      toast.id = "__screenshot-error__";
-      toast.style.cssText =
-        "position:fixed;top:16px;left:50%;transform:translateX(-50%);" +
-        "z-index:2147483647;background:#1a1a1a;color:#f87171;" +
-        "font-family:system-ui,sans-serif;font-size:13px;font-weight:500;" +
-        "padding:10px 18px;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.4);" +
-        "opacity:0;transition:opacity 0.2s ease-out;max-width:480px;" +
-        "text-align:center;line-height:1.4;cursor:pointer;";
-      toast.textContent = msg;
-      document.documentElement.appendChild(toast);
+        const toast = document.createElement("div");
+        toast.id = "__screenshot-error__";
+        toast.style.cssText =
+          "position:fixed;top:16px;left:50%;transform:translateX(-50%);" +
+          "z-index:2147483647;background:#1a1a1a;color:#f87171;" +
+          "font-family:system-ui,sans-serif;font-size:13px;font-weight:500;" +
+          "padding:10px 18px;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.4);" +
+          "opacity:0;transition:opacity 0.2s ease-out;max-width:480px;" +
+          "text-align:center;line-height:1.4;cursor:pointer;";
+        toast.textContent = msg;
+        document.documentElement.appendChild(toast);
 
-      requestAnimationFrame(() => { toast.style.opacity = "1"; });
+        requestAnimationFrame(() => { toast.style.opacity = "1"; });
 
-      function dismiss() {
-        toast.style.opacity = "0";
-        toast.addEventListener("transitionend", () => toast.remove(), { once: true });
-        document.removeEventListener("keydown", onKey);
-      }
-      function onKey(e) {
-        if (e.key === "Escape") dismiss();
-      }
-      toast.addEventListener("click", dismiss);
-      document.addEventListener("keydown", onKey);
-    },
-    args: [message]
-  }).catch(() => {}); // ignore if we can't reach the tab
+        function dismiss() {
+          toast.style.opacity = "0";
+          toast.addEventListener("transitionend", () => toast.remove(), { once: true });
+          document.removeEventListener("keydown", onKey);
+        }
+        function onKey(e) {
+          if (e.key === "Escape") dismiss();
+        }
+        toast.addEventListener("click", dismiss);
+        document.addEventListener("keydown", onKey);
+      },
+      args: [message]
+    })
+  );
 }
 
 // Soft pre-flash for full-page capture: a gentle white blink that says
 // "capture started". Resolves when the flash is removed so it cannot
 // appear inside the captured screenshot.
 function showPreFlash(tabId) {
-  return chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      return new Promise((resolve) => {
-        document.getElementById("__screenshot-preflash__")?.remove();
-        const el = document.createElement("div");
-        el.id = "__screenshot-preflash__";
-        el.style.cssText =
-          "position:fixed;inset:0;z-index:2147483647;pointer-events:none;" +
-          "background:white;opacity:0.5;transition:opacity 0.35s ease-out;";
-        document.documentElement.appendChild(el);
+  return runBestEffort(
+    "Showing pre-flash overlay",
+    () => chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        return new Promise((resolve) => {
+          document.getElementById("__screenshot-preflash__")?.remove();
+          const el = document.createElement("div");
+          el.id = "__screenshot-preflash__";
+          el.style.cssText =
+            "position:fixed;inset:0;z-index:2147483647;pointer-events:none;" +
+            "background:white;opacity:0.5;transition:opacity 0.35s ease-out;";
+          document.documentElement.appendChild(el);
 
-        let settled = false;
-        function done() {
-          if (settled) return;
-          settled = true;
-          el.remove();
-          resolve(true);
-        }
+          let settled = false;
+          function done() {
+            if (settled) return;
+            settled = true;
+            el.remove();
+            resolve(true);
+          }
 
-        // transitionend may not fire in reduced-motion or throttled tabs.
-        const fallback = setTimeout(done, 450);
-        el.addEventListener("transitionend", () => {
-          clearTimeout(fallback);
-          done();
-        }, { once: true });
+          // transitionend may not fire in reduced-motion or throttled tabs.
+          const fallback = setTimeout(done, 450);
+          el.addEventListener("transitionend", () => {
+            clearTimeout(fallback);
+            done();
+          }, { once: true });
 
-        requestAnimationFrame(() => {
-          el.style.opacity = "0";
+          requestAnimationFrame(() => {
+            el.style.opacity = "0";
+          });
         });
-      });
-    }
-  }).catch(() => {});
+      }
+    })
+  );
 }
 
 // Combined flash + preview in a single executeScript call.
 // The flash animation plays, then the preview is built on the same
 // backdrop element — no extra round-trip, no gap, no pointer-events issues.
 function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
-  return chrome.scripting.executeScript({
-    target: { tabId },
-    func: (b64, warn, id, retryTabId) => {
-      return new Promise((resolve) => {
+  return runBestEffort(
+    "Showing capture preview overlay",
+    () => chrome.scripting.executeScript({
+      target: { tabId },
+      func: (b64, warn, id, retryTabId) => {
+        return new Promise((resolve) => {
         // Remove leftovers
         document.getElementById("__screenshot-preflash__")?.remove();
         document.getElementById("__screenshot-preview__")?.remove();
@@ -1009,10 +1075,11 @@ function showFlashAndPreview(tabId, base64Data, warning, captureId = null) {
 
           resolve();
         }
-      });
-    },
-    args: [base64Data, warning ?? null, captureId, tabId]
-  }).catch(() => {}); // ignore errors on restricted pages
+        });
+      },
+      args: [base64Data, warning ?? null, captureId, tabId]
+    })
+  );
 }
 
 // Update the preview panel's status label and optionally start the
@@ -1044,9 +1111,11 @@ function updatePreviewLabel(
     scriptOptions.retryText = retryText;
   }
 
-  chrome.scripting.executeScript({
-    target: { tabId },
-    func: (txt, col, start, opts) => {
+  void runBestEffort(
+    "Updating preview label",
+    () => chrome.scripting.executeScript({
+      target: { tabId },
+      func: (txt, col, start, opts) => {
       const backdrop = document.getElementById("__screenshot-preview__");
       const expectedCaptureId = opts?.captureId;
       if (expectedCaptureId !== undefined) {
@@ -1084,7 +1153,8 @@ function updatePreviewLabel(
       if (start) {
         if (backdrop?.__startDismissTimer) backdrop.__startDismissTimer();
       }
-    },
-    args: [text, color, startTimer, scriptOptions]
-  }).catch(() => {});
+      },
+      args: [text, color, startTimer, scriptOptions]
+    })
+  );
 }

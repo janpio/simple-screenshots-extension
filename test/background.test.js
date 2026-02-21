@@ -80,7 +80,14 @@ function createBackgroundContext(options = {}) {
       query: mockFn("tabs.query", (_query, cb) => {
         cb([{ id: 1, url: "https://example.com", windowId: 1 }]);
       }),
-      get: mockFn("tabs.get", async () => ({ id: 1, windowId: 1 })),
+      get: mockFn("tabs.get", (tabId, cb) => {
+        const tab = { id: tabId, url: "https://example.com", windowId: 1 };
+        if (typeof cb === "function") {
+          cb(tab);
+          return;
+        }
+        return Promise.resolve(tab);
+      }),
       update: mockFn("tabs.update", async () => ({})),
     },
     windows: {
@@ -330,6 +337,29 @@ describe("event listener registration", () => {
     const { chrome, listeners } = createBackgroundContext();
 
     listeners.onMessageCb({ action: "capture", fullPage: false });
+
+    assert.equal(chrome.tabs.query.calls.length, 1);
+    const [queryInfo] = chrome.tabs.query.calls[0];
+    assert.deepEqual(queryInfo, { active: true, currentWindow: true });
+  });
+
+  it("onMessage prefers provided tabId for capture", () => {
+    const { chrome, listeners } = createBackgroundContext();
+
+    listeners.onMessageCb({ action: "capture", fullPage: false, tabId: 77 });
+
+    assert.equal(chrome.tabs.get.calls.length, 1);
+    assert.equal(chrome.tabs.get.calls[0][0], 77);
+    assert.equal(chrome.tabs.query.calls.length, 0);
+  });
+
+  it("onMessage falls back to active tab when provided tabId cannot be resolved", () => {
+    const { chrome, listeners } = createBackgroundContext();
+    chrome.tabs.get = function (_tabId, cb) {
+      cb(undefined);
+    };
+
+    listeners.onMessageCb({ action: "capture", fullPage: false, tabId: 99 });
 
     assert.equal(chrome.tabs.query.calls.length, 1);
     const [queryInfo] = chrome.tabs.query.calls[0];

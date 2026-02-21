@@ -140,7 +140,7 @@ Requires document focus — the extension never steals focus:
 
 Unit tests run on Node 20 and 22 via GitHub Actions (`.github/workflows/ci.yml`).
 E2E tests are implemented with Playwright and run manually via `.github/workflows/e2e-manual.yml`
-(`workflow_dispatch`, suite input: `full` or `plumbing`).
+(`workflow_dispatch`, suite input: `full`, `plumbing`, or `popup-only`).
 
 ### `test/lib.test.js`
 

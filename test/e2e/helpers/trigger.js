@@ -41,7 +41,12 @@ async function tryPopupTrigger(options) {
     serviceWorker,
     extensionId,
     popupTimeoutMs = 2000,
+    forcePopupFailure = false,
   } = options;
+
+  if (forcePopupFailure) {
+    throw new Error("Forced popup failure for fallback coverage");
+  }
 
   const popupEventPromise = context
     .waitForEvent("page", { timeout: popupTimeoutMs })
@@ -77,7 +82,7 @@ async function tryPopupTrigger(options) {
 }
 
 async function triggerViaRuntimeMessage(options) {
-  const { mode, context, extensionId } = options;
+  const { mode, context, extensionId, serviceWorker } = options;
   const page = resolveLiveFixturePage(context, extensionId, options.page);
   let sender = findPopupPage(context, extensionId);
   let createdSender = false;
@@ -89,27 +94,23 @@ async function triggerViaRuntimeMessage(options) {
     await sender.waitForLoadState("domcontentloaded");
   }
 
-  // Keep the real fixture tab active because background.js resolves
-  // the active tab when handling runtime messages from popup.
+  // Keep the real fixture tab active for captureVisibleTab + clipboard focus.
   await page.bringToFront();
 
-  const tabUrl = page.url();
-  const targetTabId = await sender.evaluate(async ({ url }) => {
-    try {
-      const byUrl = await chrome.tabs.query({ url });
-      if (byUrl[0]?.id) return byUrl[0].id;
-    } catch (_) {}
-
-    try {
-      const active = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      if (active[0]?.id) return active[0].id;
-    } catch (_) {}
-
-    return null;
-  }, { url: tabUrl });
+  const targetTabId = await serviceWorker.evaluate(async ({ url }) => {
+    const byUrl = await chrome.tabs.query({ url });
+    if (byUrl[0]?.id) {
+      return byUrl[0].id;
+    }
+    const active = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    return active[0]?.id ?? null;
+  }, { url: page.url() });
+  if (!Number.isInteger(targetTabId)) {
+    throw new Error("Unable to resolve target tab ID for runtime-message trigger");
+  }
 
   await sender.evaluate(({ fullPage, tabId }) => {
     return chrome.runtime.sendMessage({ action: "capture", fullPage, tabId });
@@ -145,6 +146,10 @@ async function triggerCapture(options) {
 
   if (strategy === "runtime-message") {
     return triggerViaRuntimeMessage(options);
+  }
+
+  if (strategy === "popup-only") {
+    return tryPopupTrigger(options);
   }
 
   if (strategy !== "popup-first") {

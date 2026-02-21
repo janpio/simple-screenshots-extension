@@ -205,7 +205,49 @@ test("visible capture on standard fixture copies viewport-sized non-blank image"
   expect(metrics.pngBytes).toBeGreaterThan(5000);
 });
 
-test("popup-first visible capture smoke succeeds with popup or deterministic fallback", async () => {
+test("@popup-only popup-only visible capture smoke succeeds without fallback", async () => {
+  const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
+  const serviceWorker = await activeServiceWorker();
+  await clearBadge(serviceWorker);
+
+  let trigger;
+  try {
+    trigger = await triggerCapture({
+      mode: "visible",
+      strategy: "popup-only",
+      popupTimeoutMs: 2000,
+      page,
+      context: harness.context,
+      serviceWorker,
+      extensionId: harness.extensionId,
+    });
+  } catch (err) {
+    test.skip(true, `Popup trigger unavailable in this environment: ${String(err?.message ?? err)}`);
+  }
+
+  const badge = await waitForCaptureSuccess({
+    serviceWorker,
+    page,
+    timeoutMs: 20000,
+    requireSeen: "...",
+  });
+
+  const metrics = await readClipboardPngMetrics(page);
+
+  logRun("popup-only-visible-smoke", {
+    trigger: trigger.triggerUsed,
+    retried: badge.retried,
+    badgeTimeline: badge.timeline,
+    image: { width: metrics.width, height: metrics.height, variance: metrics.variance },
+  });
+
+  expect(trigger.triggerUsed).toBe("popup");
+  expect(trigger.fallbackReason).toBeUndefined();
+  expect(metrics.variance).toBeGreaterThan(30);
+  expect(metrics.pngBytes).toBeGreaterThan(5000);
+});
+
+test("popup-first visible capture falls back to runtime-message when popup fails", async () => {
   const page = await openFixturePage(harness.context, fixtureServer.baseURL, "standard.html");
   const serviceWorker = await activeServiceWorker();
   await clearBadge(serviceWorker);
@@ -213,7 +255,7 @@ test("popup-first visible capture smoke succeeds with popup or deterministic fal
   const trigger = await triggerCapture({
     mode: "visible",
     strategy: "popup-first",
-    popupTimeoutMs: 750,
+    forcePopupFailure: true,
     page,
     context: harness.context,
     serviceWorker,
@@ -229,7 +271,7 @@ test("popup-first visible capture smoke succeeds with popup or deterministic fal
 
   const metrics = await readClipboardPngMetrics(page);
 
-  logRun("popup-first-visible-smoke", {
+  logRun("popup-first-runtime-fallback", {
     trigger: trigger.triggerUsed,
     fallbackReason: trigger.fallbackReason || null,
     retried: badge.retried,
@@ -237,10 +279,8 @@ test("popup-first visible capture smoke succeeds with popup or deterministic fal
     image: { width: metrics.width, height: metrics.height, variance: metrics.variance },
   });
 
-  expect(["popup", "runtime-message"]).toContain(trigger.triggerUsed);
-  if (trigger.triggerUsed === "runtime-message") {
-    expect(typeof trigger.fallbackReason).toBe("string");
-  }
+  expect(trigger.triggerUsed).toBe("runtime-message");
+  expect(trigger.fallbackReason).toContain("Forced popup failure");
   expect(metrics.variance).toBeGreaterThan(30);
   expect(metrics.pngBytes).toBeGreaterThan(5000);
 });

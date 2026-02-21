@@ -4,9 +4,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/lib.test.js test/background.test.js",
+    "test": "npm run test:unit",
+    "test:unit": "node --test test/lib.test.js test/background.test.js",
+    "test:all": "npm run test:unit && npm run test:e2e",
     "test:e2e": "playwright test -c test/e2e/playwright.config.js",
     "test:e2e:plumbing": "playwright test -c test/e2e/playwright.config.js test/e2e/00-plumbing.e2e.spec.js",
+    "test:e2e:popup-only": "playwright test -c test/e2e/playwright.config.js --grep @popup-only",
     "test:e2e:headed": "playwright test -c test/e2e/playwright.config.js --headed",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
